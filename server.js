@@ -336,12 +336,12 @@ app.post('/voice/incoming', (req, res) => {
     ? `Welcome back to Outwater Grill, ${customers[callerPhone].name}! What can I get for you today?`
     : `Thank you for calling Outwater Grill in Garfield! I'm your AI ordering assistant. May I have your name please?`;
 
-  const wsUrl = `wss://${host}/conversation?callSid=${callSid}`;
+  const wsUrl = `wss://outwater-grill-d64d7ae4fd7e.herokuapp.com/conversation?callSid=${callSid}`;
 
   const twiml = `<?xml version="1.0" encoding="UTF-8"?>
 <Response>
   <Connect>
-    <ConversationRelay url="${wsUrl}" welcomeGreeting="${welcomeGreeting}" voice="en-US-Neural2-F" transcriptionProvider="google" speechModel="phone_call" />
+    <ConversationRelay url="${wsUrl}" welcomeGreeting="${welcomeGreeting}" voice="Polly.Joanna" />
   </Connect>
 </Response>`;
 
