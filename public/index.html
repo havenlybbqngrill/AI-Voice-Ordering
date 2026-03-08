@@ -1,204 +1,21 @@
 <!DOCTYPE html>
-<html lang="en">
+<html>
 <head>
-  <meta charset="UTF-8">
-  <meta name="viewport" content="width=device-width, initial-scale=1.0">
-  <title>Outwater Grill - Voice Ordering System</title>
+  <title>Outwater Grill - Kitchen Dashboard</title>
   <style>
-    * { margin: 0; padding: 0; box-sizing: border-box; }
-    body { font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif; background: #0f0f0f; color: #fff; }
-    .container { max-width: 1200px; margin: 0 auto; padding: 20px; }
-    .header { text-align: center; padding: 30px 0; border-bottom: 2px solid #ff6b35; }
-    .header h1 { font-size: 2.5em; color: #ff6b35; margin-bottom: 10px; }
-    .tabs { display: flex; gap: 10px; margin: 20px 0; border-bottom: 1px solid #333; }
-    .tab-btn { padding: 12px 24px; background: #1a1a1a; border: none; color: #fff; cursor: pointer; font-size: 1em; border-bottom: 3px solid transparent; }
-    .tab-btn.active { border-bottom-color: #ff6b35; background: #2a2a2a; }
-    .tab-content { display: none; }
-    .tab-content.active { display: block; }
-    .order-section { background: #1a1a1a; padding: 20px; border-radius: 8px; margin: 20px 0; }
-    .kds-board { display: grid; grid-template-columns: repeat(auto-fit, minmax(300px, 1fr)); gap: 15px; }
-    .order-card { background: #2a2a2a; padding: 15px; border-radius: 8px; border-left: 4px solid #ff6b35; }
-    .order-card.ready { border-left-color: #4caf50; }
-    .customer-list { list-style: none; }
-    .customer-item { background: #2a2a2a; padding: 15px; margin: 10px 0; border-radius: 8px; cursor: pointer; }
-    .customer-item:hover { background: #3a3a3a; }
-    button { background: #ff6b35; color: #fff; border: none; padding: 10px 20px; border-radius: 5px; cursor: pointer; font-size: 1em; }
-    button:hover { background: #e55a25; }
-    input { padding: 10px; background: #2a2a2a; border: 1px solid #444; color: #fff; border-radius: 5px; width: 100%; margin: 10px 0; }
-    .status-badge { display: inline-block; padding: 5px 12px; border-radius: 20px; font-size: 0.85em; font-weight: bold; }
-    .status-new { background: #ff6b35; }
-    .status-preparing { background: #ffa500; }
-    .status-ready { background: #4caf50; }
-    h2 { color: #ff6b35; margin: 20px 0 10px 0; }
-    .menu-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(250px, 1fr)); gap: 15px; margin: 20px 0; }
-    .menu-item { background: #2a2a2a; padding: 15px; border-radius: 8px; cursor: pointer; border: 2px solid transparent; }
-    .menu-item:hover { border-color: #ff6b35; }
-    .price { color: #4caf50; font-weight: bold; }
+    body { font-family: Arial; background: #1a1a1a; color: white; padding: 20px; }
+    .order { background: #333; padding: 15px; margin: 10px 0; border-radius: 5px; }
+    h1 { color: #4CAF50; }
   </style>
 </head>
 <body>
-  <div class="container">
-    <div class="header">
-      <h1>🍽️ Outwater Grill</h1>
-      <p>AI Voice Phone Ordering System</p>
-    </div>
-
-    <div class="tabs">
-      <button class="tab-btn active" onclick="showTab('order')">📞 Order</button>
-      <button class="tab-btn" onclick="showTab('kds')">👨‍🍳 Kitchen</button>
-      <button class="tab-btn" onclick="showTab('customers')">👥 Customers</button>
-    </div>
-
-    <!-- ORDER TAB -->
-    <div id="order" class="tab-content active">
-      <div class="order-section">
-        <h2>Customer Lookup</h2>
-        <input type="text" id="customerInput" placeholder="Name or phone number..." onchange="lookupCustomer()">
-        <div id="customerInfo"></div>
-      </div>
-
-      <div class="order-section">
-        <h2>Menu Items</h2>
-        <div class="menu-grid" id="menuGrid"></div>
-      </div>
-
-      <div class="order-section">
-        <h2>Your Order</h2>
-        <div id="cartItems"></div>
-        <h3 id="totalPrice">Total: $0.00</h3>
-        <button onclick="placeOrder()">Place Order</button>
-      </div>
-    </div>
-
-    <!-- KITCHEN TAB (KDS) -->
-    <div id="kds" class="tab-content">
-      <h2>Live Orders</h2>
-      <div class="kds-board" id="kdsBoard"></div>
-    </div>
-
-    <!-- CUSTOMERS TAB -->
-    <div id="customers" class="tab-content">
-      <h2>Customer Profiles</h2>
-      <ul class="customer-list" id="customerList"></ul>
-    </div>
-  </div>
-
+  <h1>🍳 Outwater Grill Kitchen Orders</h1>
+  <div id="orders"></div>
   <script>
-    let cart = [];
-    let customers = JSON.parse(localStorage.getItem('customers')) || {};
-    let orders = JSON.parse(localStorage.getItem('orders')) || [];
-
-    // Sample menu
-    const menu = {
-      'Bacon Egg & Cheese': 4.99,
-      'Pastrami Egg & Cheese': 8.99,
-      'Steak Egg & Cheese': 8.99,
-      'Turkey Sausage Egg & Cheese': 6.49,
-      'Ham Egg & Cheese': 4.99,
-      'Grilled Cheese': 3.99,
-      'NY Style Platter Chicken': 8.99,
-      'NY Style Platter Steak': 10.99,
-      'NY Style Platter Shrimp': 11.99
+    const ws = new WebSocket('ws://' + window.location.host);
+    ws.onmessage = (e) => {
+      document.getElementById('orders').innerHTML = e.data;
     };
-
-    function showTab(tabName) {
-      document.querySelectorAll('.tab-content').forEach(t => t.classList.remove('active'));
-      document.querySelectorAll('.tab-btn').forEach(b => b.classList.remove('active'));
-      document.getElementById(tabName).classList.add('active');
-      event.target.classList.add('active');
-    }
-
-    function renderMenu() {
-      const grid = document.getElementById('menuGrid');
-      grid.innerHTML = '';
-      for (const [item, price] of Object.entries(menu)) {
-        grid.innerHTML += `<div class="menu-item" onclick="addToCart('${item}', ${price})"><strong>${item}</strong><br><span class="price">$${price.toFixed(2)}</span></div>`;
-      }
-    }
-
-    function addToCart(item, price) {
-      cart.push({ item, price });
-      updateCart();
-    }
-
-    function updateCart() {
-      const cartDiv = document.getElementById('cartItems');
-      cartDiv.innerHTML = '';
-      let total = 0;
-      cart.forEach((c, i) => {
-        cartDiv.innerHTML += `<div>${c.item} - $${c.price.toFixed(2)} <button onclick="removeFromCart(${i})">Remove</button></div>`;
-        total += c.price;
-      });
-      document.getElementById('totalPrice').textContent = `Total: $${total.toFixed(2)}`;
-    }
-
-    function removeFromCart(index) {
-      cart.splice(index, 1);
-      updateCart();
-    }
-
-    function lookupCustomer() {
-      const input = document.getElementById('customerInput').value.toLowerCase();
-      const matches = Object.values(customers).filter(c => c.name.toLowerCase().includes(input) || c.phone.includes(input));
-      const infoDiv = document.getElementById('customerInfo');
-      if (matches.length > 0) {
-        const c = matches[0];
-        infoDiv.innerHTML = `<p>Welcome back, <strong>${c.name}</strong>!</p><p>Top 5 Favorites:</p><ol>${c.favorites.slice(0, 5).map((f, i) => `<li onclick="addToCart('${f}', ${menu[f]})">${f}</li>`).join('')}</ol>`;
-      } else {
-        infoDiv.innerHTML = '<p>New customer</p>';
-      }
-    }
-
-    function placeOrder() {
-      if (cart.length === 0) { alert('Cart is empty!'); return; }
-      const customerName = document.getElementById('customerInput').value || 'Guest';
-      const orderNum = Math.floor(Math.random() * 10000);
-      const order = {
-        id: orderNum,
-        customer: customerName,
-        items: [...cart],
-        status: 'new',
-        time: new Date().toLocaleString()
-      };
-      orders.push(order);
-      localStorage.setItem('orders', JSON.stringify(orders));
-      alert(`Order #${orderNum} placed!`);
-      cart = [];
-      updateCart();
-      renderKDS();
-    }
-
-    function renderKDS() {
-      const board = document.getElementById('kdsBoard');
-      board.innerHTML = orders.map(o => `
-        <div class="order-card ${o.status === 'ready' ? 'ready' : ''}">
-          <h3>Order #${o.id}</h3>
-          <p><strong>${o.customer}</strong></p>
-          <p>${o.items.map(i => i.item).join(', ')}</p>
-          <span class="status-badge status-${o.status}">${o.status.toUpperCase()}</span>
-          <button onclick="updateOrderStatus(${o.id})">Next Status</button>
-        </div>
-      `).join('');
-    }
-
-    function updateOrderStatus(orderId) {
-      const order = orders.find(o => o.id === orderId);
-      if (order.status === 'new') order.status = 'preparing';
-      else if (order.status === 'preparing') order.status = 'ready';
-      localStorage.setItem('orders', JSON.stringify(orders));
-      renderKDS();
-    }
-
-    function renderCustomers() {
-      const list = document.getElementById('customerList');
-      list.innerHTML = Object.entries(customers).map(([id, c]) => `
-        <li class="customer-item"><strong>${c.name}</strong><br>Phone: ${c.phone}<br>Orders: ${c.favorites.length}</li>
-      `).join('');
-    }
-
-    renderMenu();
-    renderKDS();
-    renderCustomers();
   </script>
 </body>
 </html>
