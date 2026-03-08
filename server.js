@@ -5,7 +5,8 @@ const cors = require('cors');
 const http = require('http');
 const WebSocket = require('ws');
 const twilio = require('twilio');
-const Anthropic = require('@anthropic-ai/sdk');
+const Anthropic = require('@anthropic-ai/sdk').default || require('@anthropic-ai/sdk');
+const VoiceResponse = twilio.twiml.VoiceResponse;
 
 const app = express();
 const server = http.createServer(app);
@@ -17,90 +18,284 @@ app.use(bodyParser.json());
 app.use(express.static('public'));
 
 const anthropic = new Anthropic({ apiKey: process.env.ANTHROPIC_API_KEY });
+const twilioClient = twilio(process.env.TWILIO_ACCOUNT_SID, process.env.TWILIO_AUTH_TOKEN);
 
-let orders = [];
-let customers = {};
-let sessions = {};
-let orderNum = 1;
-let wsClients = [];
+// ==================== IN-MEMORY STORE ====================
+const customers = [
+  {
+    id: 'c1', name: 'Jaydeep', phone: '+19735550101', orders: 12, spent: 89.50,
+    favorites: [
+      { id: 1, name: 'Bacon, Egg & Cheese', price: 4.99, count: 8 },
+      { id: 2, name: 'Pastrami Egg & Cheese', price: 8.99, count: 5 },
+      { id: 20, name: 'NY Style Platter Steak', price: 10.99, count: 4 },
+      { id: 10, name: 'Egg & Cheese', price: 3.99, count: 3 },
+      { id: 13, name: 'Sausage Egg & Cheese', price: 4.99, count: 2 }
+    ]
+  }
+];
 
-const MENU = `
-BREAKFAST SANDWICHES:
-- Bacon Egg & Cheese $4.99
-- Sausage Egg & Cheese $4.99
-- Taylor Ham Egg & Cheese $4.99
-- Ham Egg & Cheese $4.99
-- Egg & Cheese $3.99
-- Grilled Cheese $3.99
-- BLT $4.99
-- Turkey Bacon Egg & Cheese $6.49
-- Beef Sausage Egg & Cheese $6.49
-- Turkey Sausage Egg & Cheese $6.49
-- Beef Bacon Egg & Cheese $6.99
-- Chorizo Egg & Cheese $6.99
-- Steak Egg & Cheese $8.99
-- Pastrami Egg & Cheese $8.99
+const orders = [];
+const callSessions = {}; // active call state keyed by CallSid
 
-NY STYLE PLATTERS (served with rice & salad):
-- Chicken Platter $8.99
-- Falafel Platter $8.99
-- Shrimp Platter $11.99
-- Chicken & Shrimp Platter $11.99
-- NY Style Steak Platter $10.99
-- Chicken & Steak Platter $12.99
-- Grilled Tilapia Platter $13.99
-- Grilled Salmon Platter $13.99
+// ==================== MENU ====================
+const MENU = {
+  Breakfast: [
+    { id: 1,  name: 'Bacon, Egg & Cheese',        price: 4.99,  emoji: '🥓' },
+    { id: 2,  name: 'Pastrami Egg & Cheese',       price: 8.99,  emoji: '🥩' },
+    { id: 3,  name: 'Turkey Sausage Egg & Cheese', price: 6.49,  emoji: '🦃' },
+    { id: 4,  name: 'Steak Egg & Cheese',          price: 8.99,  emoji: '🥩' },
+    { id: 5,  name: 'Chorizo Egg & Cheese',        price: 6.99,  emoji: '🌶️' },
+    { id: 6,  name: 'Ham Egg & Cheese',            price: 4.99,  emoji: '🍖' },
+    { id: 7,  name: 'BLT - Bacon Lettuce Tomato',  price: 4.99,  emoji: '🥬' },
+    { id: 8,  name: 'Beef Sausage Egg & Cheese',   price: 6.49,  emoji: '🍔' },
+    { id: 9,  name: 'Beef Bacon Egg & Cheese',     price: 6.99,  emoji: '🥓' },
+    { id: 10, name: 'Egg & Cheese',                price: 3.99,  emoji: '🍳' },
+    { id: 11, name: 'Turkey Bacon Egg & Cheese',   price: 6.49,  emoji: '🦃' },
+    { id: 12, name: 'Grilled Cheese',              price: 3.99,  emoji: '🧀' },
+  { id: 15, name: 'Kimchi Egg & Cheese',         price: 5.99,  emoji: '🥬' },
+    { id: 13, name: 'Sausage Egg & Cheese',        price: 4.99,  emoji: '🌭' },
+    { id: 14, name: 'Taylor Ham Egg & Cheese',     price: 4.99,  emoji: '🍖' },
+  ],
+  'NY Platters': [
+    { id: 20, name: 'NY Style Platter Steak',             price: 10.99, emoji: '🥩' },
+    { id: 21, name: 'NY Style Platter Chicken & Steak',   price: 12.99, emoji: '🍗' },
+    { id: 22, name: 'NY Style Platter Shrimp',            price: 11.99, emoji: '🍤' },
+    { id: 23, name: 'NY Style Platter Chicken & Shrimp',  price: 11.99, emoji: '🍗' },
+    { id: 24, name: 'Grilled Tilapia Platter',            price: 13.99, emoji: '🐟' },
+    { id: 25, name: 'Grilled Salmon Platter',             price: 13.99, emoji: '🐟' },
+    { id: 26, name: 'NY Style Platter Falafel',           price: 8.99,  emoji: '🧆' },
+    { id: 27, name: 'NY Style Platter Chicken',           price: 8.99,  emoji: '🍗' },
+  ]
+};
 
-BREAD OPTIONS (for sandwiches): Round Roll (default), Half Hero +$1.00, Bagel +$0.50, Everything Bagel +$0.50, Croissant +$0.99, White Bread, Wheat Bread
-EGG OPTIONS: Fried (default), Scrambled, Over Easy, No Eggs
-CHEESE OPTIONS: American (default), Mozzarella, Provolone, Swiss, No Cheese
-`;
+const ALL_ITEMS = Object.values(MENU).flat();
 
-function broadcast(data) {
-  wsClients.forEach(c => {
-    if (c.readyState === WebSocket.OPEN) {
-      c.send(JSON.stringify(data));
+function getMenuText() {
+  return ALL_ITEMS.map(i => `ID:${i.id} "${i.name}" $${i.price.toFixed(2)}`).join('\n');
+}
+
+// ==================== CUSTOMER HELPERS ====================
+function findCustomer(phone) {
+  const clean = phone.replace(/\D/g, '');
+  return customers.find(c => c.phone.replace(/\D/g, '') === clean);
+}
+
+function getFavoritesText(customer) {
+  if (!customer.favorites.length) return '';
+  const top5 = customer.favorites.slice(0, 5);
+  return top5.map((f, i) => `${i + 1}. ${f.name} - $${f.price.toFixed(2)}`).join(', ');
+}
+
+function getOrCreateSession(callSid, callerPhone) {
+  if (!callSessions[callSid]) {
+    const customer = findCustomer(callerPhone);
+    callSessions[callSid] = {
+      callSid,
+      callerPhone,
+      customer: customer || null,
+      cart: [],
+      history: [],
+      step: customer ? 'ordering' : 'get_name',
+      tempName: null
+    };
+  }
+  return callSessions[callSid];
+}
+
+// ==================== AI PROCESSING ====================
+async function processOrderWithAI(session, userSpeech) {
+  const customer = session.customer;
+  const favText = customer ? getFavoritesText(customer) : '';
+  const cartText = session.cart.length
+    ? session.cart.map(i => `${i.qty}x ${i.name} ($${(i.price * i.qty).toFixed(2)})`).join(', ')
+    : 'empty';
+
+  const systemPrompt = `You are the friendly AI phone ordering assistant for Outwater Grill, a fast-food restaurant in Garfield, NJ.
+You are speaking to a customer on the phone. Keep responses SHORT (1-3 sentences max) and natural for phone conversation.
+Customer name: ${customer ? customer.name : 'unknown'}
+${favText ? `Their top 5 favorites: ${favText}` : ''}
+Current cart: ${cartText}
+
+Menu items available:
+${getMenuText()}
+
+VOICE RECOGNITION RULES (very important):
+- Speech-to-text is imperfect. Make your BEST GUESS at what they ordered based on the menu.
+- "bacon and cheese" = "Bacon, Egg & Cheese" (id:1)
+- "chicken" alone = "NY Style Platter Chicken" (id:27)
+- "steak" alone = "NY Style Platter Steak" (id:20)
+- "taylor ham" or "pork roll" = "Taylor Ham Egg & Cheese" (id:14)
+- "sausage" alone = "Sausage Egg & Cheese" (id:13)
+- "egg and cheese" = "Egg & Cheese" (id:10)
+- "grilled cheese" = "Grilled Cheese" (id:12)
+- "salmon" = "Grilled Salmon Platter" (id:25)
+- "tilapia" = "Grilled Tilapia Platter" (id:24)
+- "shrimp" = "NY Style Platter Shrimp" (id:22)
+- "falafel" = "NY Style Platter Falafel" (id:26)
+- If unsure, pick the CLOSEST match and confirm it: "I got you a Bacon Egg and Cheese, is that right?"
+- NEVER say item not found. Always try to match something.
+- If they say something totally unrelated to food, gently redirect: "We have breakfast sandwiches and NY platters, what can I get you?"
+- If they say a number (like "give me number 1"), match to their favorites list
+- Keep responses brief and conversational
+- When they want to checkout/confirm, say "Great! Let me confirm your order." and include <CONFIRM> tag
+- When order is complete and confirmed, include <ORDER_COMPLETE> tag
+- When adding items, include <ADD_ITEMS>[{"id":1,"qty":1,"note":""}]</ADD_ITEMS> tag
+- If they want to remove items, include <REMOVE_ITEM>item name</REMOVE_ITEM>
+- Always be warm and fast-food casual
+- Tax is 8%, mention total with tax when confirming`;
+
+  const messages = [
+    ...session.history,
+    { role: 'user', content: userSpeech }
+  ];
+
+  const response = await anthropic.messages.create({
+    model: 'claude-sonnet-4-20250514',
+    max_tokens: 300,
+    system: systemPrompt,
+    messages
+  });
+
+  const aiText = response.content[0].text;
+
+  // Parse commands
+  const addMatch = aiText.match(/<ADD_ITEMS>(.*?)<\/ADD_ITEMS>/s);
+  const isConfirm = aiText.includes('<CONFIRM>');
+  const isComplete = aiText.includes('<ORDER_COMPLETE>');
+  const removeMatch = aiText.match(/<REMOVE_ITEM>(.*?)<\/REMOVE_ITEM>/);
+
+  // Clean spoken text
+  const spokenText = aiText
+    .replace(/<ADD_ITEMS>.*?<\/ADD_ITEMS>/s, '')
+    .replace(/<CONFIRM>/g, '')
+    .replace(/<ORDER_COMPLETE>/g, '')
+    .replace(/<REMOVE_ITEM>.*?<\/REMOVE_ITEM>/g, '')
+    .trim();
+
+  // Process item additions
+  if (addMatch) {
+    try {
+      const items = JSON.parse(addMatch[1]);
+      items.forEach(orderItem => {
+        const menuItem = ALL_ITEMS.find(m => m.id === orderItem.id);
+        if (menuItem) {
+          const existing = session.cart.find(c => c.id === menuItem.id);
+          if (existing) existing.qty += (orderItem.qty || 1);
+          else session.cart.push({ ...menuItem, qty: orderItem.qty || 1, note: orderItem.note || '' });
+        }
+      });
+    } catch (e) { console.error('Parse error:', e); }
+  }
+
+  // Process removals
+  if (removeMatch) {
+    const removeName = removeMatch[1].toLowerCase();
+    session.cart = session.cart.filter(c => !c.name.toLowerCase().includes(removeName));
+  }
+
+  // Update conversation history
+  session.history.push({ role: 'user', content: userSpeech });
+  session.history.push({ role: 'assistant', content: aiText });
+
+  // Keep history manageable
+  if (session.history.length > 20) session.history = session.history.slice(-20);
+
+  return { spokenText, isConfirm, isComplete };
+}
+
+// ==================== ORDER PLACEMENT ====================
+function placeOrder(session) {
+  if (!session.cart.length) return null;
+  const subtotal = session.cart.reduce((s, i) => s + i.price * i.qty, 0);
+  const tax = subtotal * 0.08;
+  const total = subtotal + tax;
+  const orderNum = Math.floor(Math.random() * 9000) + 1000;
+
+  const order = {
+    id: '#' + orderNum,
+    num: orderNum,
+    customer: session.customer ? session.customer.name : session.tempName || 'Phone Customer',
+    phone: session.callerPhone,
+    items: [...session.cart],
+    subtotal,
+    tax,
+    total,
+    status: 'new',
+    time: new Date(),
+    timeStr: new Date().toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })
+  };
+
+  orders.push(order);
+
+  // Update customer history
+  if (session.customer) {
+    session.customer.orders++;
+    session.customer.spent += subtotal;
+    session.cart.forEach(cartItem => {
+      const fav = session.customer.favorites.find(f => f.id === cartItem.id);
+      if (fav) fav.count += cartItem.qty;
+      else session.customer.favorites.push({ id: cartItem.id, name: cartItem.name, price: cartItem.price, count: cartItem.qty });
+    });
+    session.customer.favorites.sort((a, b) => b.count - a.count);
+  }
+
+  // Broadcast to KDS via WebSocket
+  broadcastKDS({ type: 'new_order', order });
+
+  return order;
+}
+
+// ==================== WEBSOCKET (KDS) ====================
+function broadcastKDS(data) {
+  wss.clients.forEach(client => {
+    if (client.readyState === WebSocket.OPEN) {
+      client.send(JSON.stringify(data));
     }
   });
 }
 
 wss.on('connection', ws => {
-  wsClients.push(ws);
+  console.log('KDS client connected');
+  // Send current orders on connect
   ws.send(JSON.stringify({ type: 'init', orders }));
 
   ws.on('message', msg => {
-    try {
-      const data = JSON.parse(msg);
-      if (data.type === 'advance_order') {
-        const order = orders.find(o => o.num === data.num);
-        if (order) {
-          const flow = ['new', 'prep', 'ready', 'done'];
-          const idx = flow.indexOf(order.status);
-          if (idx < flow.length - 1) order.status = flow[idx + 1];
-          broadcast({ type: 'order_updated', order });
+    const data = JSON.parse(msg);
+    if (data.type === 'advance_order') {
+      const order = orders.find(o => o.num === data.num);
+      if (order) {
+        const flow = { new: 'prep', prep: 'ready', ready: 'done' };
+        const next = flow[order.status];
+        if (next === 'done') {
+          orders.splice(orders.indexOf(order), 1);
+          broadcastKDS({ type: 'order_removed', num: data.num });
+        } else {
+          order.status = next;
+          broadcastKDS({ type: 'order_updated', order });
         }
       }
-    } catch (e) {}
-  });
-
-  ws.on('close', () => {
-    wsClients = wsClients.filter(c => c !== ws);
+    }
   });
 });
 
-// Health check
-app.get('/', (req, res) => res.send('Outwater Grill Online'));
+// ==================== TWILIO VOICE ROUTES ====================
 
-// Twilio incoming call
+// Initial call answer
 app.post('/voice/incoming', (req, res) => {
-  const phone = req.body.From;
-  const twiml = new twilio.twiml.VoiceResponse();
+  const callSid = req.body.CallSid;
+  const callerPhone = req.body.From || '';
+  const session = getOrCreateSession(callSid, callerPhone);
+  const twiml = new VoiceResponse();
 
-  sessions[phone] = { phone, items: [], history: [] };
-
-  let greeting = 'Welcome to Outwater Grill!';
-  if (customers[phone]) {
-    greeting = `Welcome back, ${customers[phone].name}!`;
+  if (session.customer) {
+    const favText = getFavoritesText(session.customer);
+    const greeting = `Welcome back to Outwater Grill, ${session.customer.name}! ` +
+      (favText ? `Your top favorites are: ${favText}. What can I get for you today?` : `What can I get for you today?`);
+    twiml.say({ voice: 'Polly.Joanna' }, greeting);
+  } else {
+    twiml.say({ voice: 'Polly.Joanna' },
+      'Thank you for calling Outwater Grill in Garfield! I\'m your AI ordering assistant. May I have your name please?'
+    );
   }
 
   const gather = twiml.gather({
@@ -108,128 +303,127 @@ app.post('/voice/incoming', (req, res) => {
     action: '/voice/process',
     method: 'POST',
     speechTimeout: 'auto',
-    language: 'en-US'
+    language: 'en-US',
+    timeout: 8
   });
-
-  gather.say({ voice: 'Polly.Joanna' },
-    `${greeting} What would you like to order today? You can say things like: bacon egg and cheese on a roll, or chicken platter.`
-  );
 
   res.type('text/xml');
   res.send(twiml.toString());
 });
 
-// Process speech
+// Process speech input
 app.post('/voice/process', async (req, res) => {
-  const phone = req.body.From;
-  const speech = req.body.SpeechResult || '';
+  const callSid = req.body.CallSid;
+  const callerPhone = req.body.From || '';
+  const speechResult = req.body.SpeechResult || '';
+  const session = getOrCreateSession(callSid, callerPhone);
+  const twiml = new VoiceResponse();
 
-  if (!sessions[phone]) sessions[phone] = { phone, items: [], history: [] };
-  const session = sessions[phone];
+  console.log(`[${callSid}] Customer said: "${speechResult}"`);
 
-  session.history.push({ role: 'user', content: speech });
+  if (!speechResult) {
+    twiml.say({ voice: 'Polly.Joanna' }, 'Sorry, I didn\'t catch that. Could you please repeat?');
+    twiml.gather({
+      input: 'speech',
+      action: '/voice/process',
+      method: 'POST',
+      speechTimeout: 'auto',
+      language: 'en-US',
+      timeout: 8
+    });
+    res.type('text/xml');
+    return res.send(twiml.toString());
+  }
+
+  // Handle get_name step
+  if (session.step === 'get_name') {
+    session.tempName = speechResult;
+    session.step = 'ordering';
+    twiml.say({ voice: 'Polly.Joanna' },
+      `Nice to meet you, ${speechResult}! What would you like to order today? We have breakfast sandwiches, NY style platters, and more.`
+    );
+    twiml.gather({
+      input: 'speech',
+      action: '/voice/process',
+      method: 'POST',
+      speechTimeout: 'auto',
+      language: 'en-US',
+      timeout: 8
+    });
+    res.type('text/xml');
+    return res.send(twiml.toString());
+  }
 
   try {
-    const systemPrompt = `You are a friendly phone order taker for Outwater Grill restaurant. 
-Menu: ${MENU}
+    const { spokenText, isConfirm, isComplete } = await processOrderWithAI(session, speechResult);
 
-Current order so far: ${JSON.stringify(session.items)}
-
-Your job:
-- Help customers order from the menu
-- Ask about bread choice, egg style, cheese for sandwiches if not specified
-- Confirm the order when customer says they're done
-- Be brief and friendly (this is a phone call)
-
-When customer confirms order is complete, end your response with:
-<ORDER_COMPLETE>
-
-When adding items, include them in your response like:
-<ADD_ITEM>{"name":"Bacon Egg & Cheese","price":4.99,"mods":"scrambled eggs, everything bagel"}</ADD_ITEM>
-
-Keep responses SHORT - 1-2 sentences max.`;
-
-    const response = await anthropic.messages.create({
-      model: 'claude-sonnet-4-20250514',
-      max_tokens: 300,
-      system: systemPrompt,
-      messages: session.history
-    });
-
-    const aiText = response.content[0].text;
-    session.history.push({ role: 'assistant', content: aiText });
-
-    // Parse any items added
-    const itemMatches = aiText.matchAll(/<ADD_ITEM>(.*?)<\/ADD_ITEM>/gs);
-    for (const match of itemMatches) {
-      try {
-        const item = JSON.parse(match[1]);
-        session.items.push(item);
-      } catch (e) {}
-    }
-
-    // Clean response for TTS
-    const cleanText = aiText
-      .replace(/<ADD_ITEM>.*?<\/ADD_ITEM>/gs, '')
-      .replace(/<ORDER_COMPLETE>/g, '')
-      .trim();
-
-    const twiml = new twilio.twiml.VoiceResponse();
-
-    if (aiText.includes('<ORDER_COMPLETE>') && session.items.length > 0) {
-      // Save order
-      const num = orderNum++;
-      const total = session.items.reduce((sum, i) => sum + (i.price || 0), 0);
-      const order = {
-        num,
-        phone,
-        name: customers[phone]?.name || 'Phone Customer',
-        items: session.items,
-        total: (total * 1.08).toFixed(2),
-        status: 'new',
-        time: new Date().toLocaleTimeString()
-      };
-
-      orders.push(order);
-      broadcast({ type: 'new_order', order });
-
-      twiml.say({ voice: 'Polly.Joanna' },
-        `${cleanText} Your order number is ${num}. We'll have it ready soon! Goodbye!`
-      );
-
-      delete sessions[phone];
+    if (isComplete || isConfirm) {
+      // Place the order
+      const order = placeOrder(session);
+      if (order) {
+        const itemList = order.items.map(i => `${i.qty} ${i.name}`).join(', ');
+        const confirmMsg = `Perfect! Your order is confirmed. Order number ${order.num}. ` +
+          `You ordered: ${itemList}. Total is $${order.total.toFixed(2)} including tax. ` +
+          `We'll text you when it's ready for pickup. Thank you for calling Outwater Grill!`;
+        twiml.say({ voice: 'Polly.Joanna' }, confirmMsg);
+        // Clean up session
+        delete callSessions[callSid];
+      } else {
+        twiml.say({ voice: 'Polly.Joanna' }, 'It looks like your cart is empty. What would you like to order?');
+        twiml.gather({
+          input: 'speech',
+          action: '/voice/process',
+          method: 'POST',
+          speechTimeout: 'auto',
+          language: 'en-US',
+          timeout: 8
+        });
+      }
     } else {
-      const gather = twiml.gather({
+      twiml.say({ voice: 'Polly.Joanna' }, spokenText);
+      twiml.gather({
         input: 'speech',
         action: '/voice/process',
         method: 'POST',
         speechTimeout: 'auto',
-        language: 'en-US'
+        language: 'en-US',
+        timeout: 10
       });
-      gather.say({ voice: 'Polly.Joanna' }, cleanText || 'What else can I get for you?');
     }
-
-    res.type('text/xml');
-    res.send(twiml.toString());
-
-  } catch (err) {
-    console.error('AI Error:', err);
-    const twiml = new twilio.twiml.VoiceResponse();
-    const gather = twiml.gather({
-      input: 'speech',
-      action: '/voice/process',
-      method: 'POST',
-      speechTimeout: 'auto'
-    });
-    gather.say({ voice: 'Polly.Joanna' }, 'Sorry, I did not catch that. What would you like to order?');
-    res.type('text/xml');
-    res.send(twiml.toString());
+  } catch (error) {
+    console.error('AI error:', error);
+    twiml.say({ voice: 'Polly.Joanna' },
+      'I\'m having a little trouble. Please hold and a team member will assist you.'
+    );
   }
+
+  res.type('text/xml');
+  res.send(twiml.toString());
 });
 
-// REST API
+// ==================== REST API FOR KDS/DASHBOARD ====================
 app.get('/api/orders', (req, res) => res.json(orders));
-app.get('/api/customers', (req, res) => res.json(Object.values(customers)));
+app.get('/api/customers', (req, res) => res.json(customers));
 
+app.post('/api/orders/:num/advance', (req, res) => {
+  const order = orders.find(o => o.num === parseInt(req.params.num));
+  if (!order) return res.status(404).json({ error: 'Not found' });
+  const flow = { new: 'prep', prep: 'ready', ready: 'done' };
+  const next = flow[order.status];
+  if (next === 'done') {
+    orders.splice(orders.indexOf(order), 1);
+    broadcastKDS({ type: 'order_removed', num: order.num });
+    return res.json({ removed: true });
+  }
+  order.status = next;
+  broadcastKDS({ type: 'order_updated', order });
+  res.json(order);
+});
+
+// ==================== START ====================
 const PORT = process.env.PORT || 3000;
-server.listen(PORT, () => console.log(`Outwater Grill server running on port ${PORT}`));
+server.listen(PORT, () => {
+  console.log(`🍔 Outwater Grill ordering system running on port ${PORT}`);
+  console.log(`📞 Twilio webhook: POST /voice/incoming`);
+  console.log(`📺 KDS Dashboard: http://localhost:${PORT}`);
+});
