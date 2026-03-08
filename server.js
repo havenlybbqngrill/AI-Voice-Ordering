@@ -307,6 +307,8 @@ app.post('/voice/incoming', (req, res) => {
     );
   }
 
+  twiml.redirect({ method: "POST" }, "/voice/incoming");
+
   res.type('text/xml');
   res.send(twiml.toString());
 });
