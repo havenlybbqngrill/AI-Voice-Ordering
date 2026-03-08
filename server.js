@@ -287,25 +287,25 @@ app.post('/voice/incoming', (req, res) => {
   const session = getOrCreateSession(callSid, callerPhone);
   const twiml = new VoiceResponse();
 
-  if (session.customer) {
-    const favText = getFavoritesText(session.customer);
-    const greeting = `Welcome back to Outwater Grill, ${session.customer.name}! ` +
-      (favText ? `Your top favorites are: ${favText}. What can I get for you today?` : `What can I get for you today?`);
-    twiml.say({ voice: 'Polly.Joanna' }, greeting);
-  } else {
-    twiml.say({ voice: 'Polly.Joanna' },
-      'Thank you for calling Outwater Grill in Garfield! I\'m your AI ordering assistant. May I have your name please?'
-    );
-  }
-
   const gather = twiml.gather({
     input: 'speech',
     action: '/voice/process',
     method: 'POST',
     speechTimeout: 'auto',
     language: 'en-US',
-    timeout: 8
+    timeout: 10
   });
+
+  if (session.customer) {
+    const favText = getFavoritesText(session.customer);
+    const greeting = `Welcome back to Outwater Grill, ${session.customer.name}! ` +
+      (favText ? `Your top favorites are: ${favText}. What can I get for you today?` : `What can I get for you today?`);
+    gather.say({ voice: 'Polly.Joanna' }, greeting);
+  } else {
+    gather.say({ voice: 'Polly.Joanna' },
+      'Thank you for calling Outwater Grill in Garfield! I\'m your AI ordering assistant. May I have your name please?'
+    );
+  }
 
   res.type('text/xml');
   res.send(twiml.toString());
