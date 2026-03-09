@@ -341,7 +341,7 @@ app.post('/voice/incoming', (req, res) => {
   const twiml = `<?xml version="1.0" encoding="UTF-8"?>
 <Response>
   <Connect>
-    <ConversationRelay url="${wsUrl}" welcomeGreeting="Welcome to Outwater Grill! What is your name please?" ttsProvider="Amazon" voice="Polly.Joanna" />
+    <ConversationRelay url="${wsUrl}" welcomeGreeting="Welcome to Outwater Grill! What is your name please?" ttsProvider="amazon" voice="Joanna" />
   </Connect>
 </Response>`;
 
@@ -356,7 +356,7 @@ app.get('/test-twiml', (req, res) => {
   const twiml = `<?xml version="1.0" encoding="UTF-8"?>
 <Response>
   <Connect>
-    <ConversationRelay url="${wsUrl}" welcomeGreeting="Welcome to Outwater Grill" ttsProvider="Amazon" voice="Polly.Joanna" />
+    <ConversationRelay url="${wsUrl}" welcomeGreeting="Welcome to Outwater Grill" ttsProvider="amazon" voice="Joanna" />
   </Connect>
 </Response>`;
   res.type('text/xml').send(twiml);
