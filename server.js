@@ -53,6 +53,21 @@ function broadcastKDS(data) {
 
 function fmt(n) { return '$' + n.toFixed(2); }
 
+// Find best matching menu item from text - returns longest match to avoid partial matches
+function findBestMenuItem(text) {
+  const lower = text.toLowerCase();
+  let best = null;
+  let bestLen = 0;
+  MENU.forEach(item => {
+    const name = item.name.toLowerCase();
+    if (lower.includes(name) && name.length > bestLen) {
+      best = item;
+      bestLen = name.length;
+    }
+  });
+  return best;
+}
+
 const wssKDS = new WebSocket.Server({ noServer: true });
 const wssConv = new WebSocket.Server({ noServer: true });
 
@@ -96,7 +111,7 @@ wssConv.on('connection', (ws, req) => {
   console.log('[WS Connected] ' + callSid);
 
   if (!callSessions[callSid]) {
-    callSessions[callSid] = { callSid, phone: '', name: null, cart: [], history: [], step: 'get_name' };
+    callSessions[callSid] = { callSid, phone: '', name: null, cart: [], history: [], step: 'get_name', orderPlaced: false };
   }
   const session = callSessions[callSid];
 
@@ -118,6 +133,9 @@ wssConv.on('connection', (ws, req) => {
         if (!speech) return;
         console.log('[' + callSid + '] Said: "' + speech + '"');
 
+        // Don't process after order placed
+        if (session.orderPlaced) return;
+
         if (session.step === 'get_name') {
           session.name = speech;
           session.step = 'ordering';
@@ -127,18 +145,22 @@ wssConv.on('connection', (ws, req) => {
         }
 
         const reply = await getAIReply(session, speech);
-        if (reply.done) {
+
+        if (reply.done && !session.orderPlaced) {
+          session.orderPlaced = true;
           const order = placeOrder(session);
           const items = order.items.map(i => i.qty + ' ' + i.name).join(', ');
           ws.send(JSON.stringify({ type: 'text', token: 'Perfect! Order number ' + order.num + '. You ordered ' + items + '. Total is ' + fmt(order.total) + ' with tax. Thank you for calling Outwater Grill!', last: true }));
           setTimeout(() => delete callSessions[callSid], 5000);
-        } else {
+        } else if (!reply.done) {
           ws.send(JSON.stringify({ type: 'text', token: reply.text, last: true }));
         }
       }
     } catch (err) {
       console.error('Error: ' + err.message);
-      ws.send(JSON.stringify({ type: 'text', token: 'Sorry about that. What would you like to order?', last: true }));
+      if (!session.orderPlaced) {
+        ws.send(JSON.stringify({ type: 'text', token: 'Sorry about that. What would you like to order?', last: true }));
+      }
     }
   });
 
@@ -156,11 +178,11 @@ async function getAIReply(session, speech) {
     'Cart: ' + cartText + '\n' +
     'Menu: ' + MENU.map(i => i.name + ' ' + fmt(i.price)).join(', ') + '\n\n' +
     'Rules:\n' +
-    '- Match customer speech to closest menu item\n' +
-    '- When you add an item, say exactly: "Got it, added [EXACT ITEM NAME]. Anything else?"\n' +
-    '- When customer says done/confirm/checkout: summarize and end with [DONE]\n' +
-    '- Tax 8%\n' +
-    '- Always match something, never say not found';
+    '- When adding an item respond EXACTLY like: "Got it, added [EXACT ITEM NAME FROM MENU]. Anything else?"\n' +
+    '- Use the EXACT item name from the menu, nothing more\n' +
+    '- When customer says done/that is all/confirm/checkout: read back their order with total and end with [DONE]\n' +
+    '- Tax is 8 percent\n' +
+    '- Always match to one single item, never list multiple items in confirmation';
 
   session.history.push({ role: 'user', content: speech });
 
@@ -175,17 +197,14 @@ async function getAIReply(session, speech) {
   session.history.push({ role: 'assistant', content: text });
   if (session.history.length > 12) session.history = session.history.slice(-12);
 
-  // Only add items that AI explicitly names in confirmation
+  // Find the single best matching item in AI response
   const aiLower = text.toLowerCase();
-  if (/got it, added|added/.test(aiLower)) {
-    MENU.forEach(item => {
-      if (aiLower.includes(item.name.toLowerCase())) {
-        if (!session.cart.find(c => c.id === item.id)) {
-          session.cart.push({ id: item.id, name: item.name, price: item.price, qty: 1 });
-          console.log('Cart + ' + item.name);
-        }
-      }
-    });
+  if (/got it, added/.test(aiLower)) {
+    const item = findBestMenuItem(text);
+    if (item && !session.cart.find(c => c.id === item.id)) {
+      session.cart.push({ id: item.id, name: item.name, price: item.price, qty: 1 });
+      console.log('Cart + ' + item.name);
+    }
   }
 
   return { text: text.replace('[DONE]', '').trim(), done: text.includes('[DONE]') };
@@ -218,7 +237,8 @@ app.post('/voice/incoming', (req, res) => {
     callSid, phone,
     name: customers[phone] ? customers[phone].name : null,
     cart: [], history: [],
-    step: customers[phone] ? 'ordering' : 'get_name'
+    step: customers[phone] ? 'ordering' : 'get_name',
+    orderPlaced: false
   };
 
   const greeting = customers[phone]
@@ -226,7 +246,6 @@ app.post('/voice/incoming', (req, res) => {
     : 'Welcome to Outwater Grill! May I have your name please?';
 
   const wsUrl = 'wss://outwater-grill-d64d7ae4fd7e.herokuapp.com/conversation?callSid=' + callSid;
-
   const twiml = '<?xml version="1.0" encoding="UTF-8"?>\n<Response>\n  <Connect>\n    <ConversationRelay url="' + wsUrl + '" welcomeGreeting="' + greeting + '" />\n  </Connect>\n</Response>';
 
   console.log('Call from ' + phone + ' | ' + callSid);
