@@ -129,6 +129,7 @@ body { font-family:'DM Sans',sans-serif; background:var(--bg); color:var(--text)
     <div class="tabs">
       <button class="tab active" onclick="showPage('kds',this)">🍳 Kitchen</button>
       <button class="tab" onclick="showPage('customers',this)">👥 Customers</button>
+      <button class="tab" onclick="showPage('training',this)">🧠 Training</button>
     </div>
   </div>
 </nav>
@@ -177,6 +178,36 @@ body { font-family:'DM Sans',sans-serif; background:var(--bg); color:var(--text)
     <div class="customers-grid" id="customersGrid"></div>
   </div>
 </div>
+
+  <!-- TRAINING PAGE -->
+  <div class="page" id="page-training">
+    <div class="page-header">
+      <div class="page-title">AI TRAINING</div>
+      <a id="exportBtn" href="/api/training/export" style="background:var(--green);color:#fff;padding:9px 18px;border-radius:9px;font-size:13px;font-weight:700;text-decoration:none;">⬇ Export JSONL</a>
+    </div>
+
+    <!-- Stats row -->
+    <div style="display:flex;gap:12px;margin-bottom:24px;flex-wrap:wrap" id="trainingStats">
+      <div class="stat-card s-new"><span style="font-size:20px">📞</span><div><div class="stat-num" id="tsCalls" style="color:var(--red)">—</div><div class="stat-label">Total Calls</div></div></div>
+      <div class="stat-card s-prep"><span style="font-size:20px">💬</span><div><div class="stat-num" id="tsTurns" style="color:var(--orange)">—</div><div class="stat-label">Turns Logged</div></div></div>
+      <div class="stat-card s-ready"><span style="font-size:20px">🚩</span><div><div class="stat-num" id="tsFlagged" style="color:#ef4444">—</div><div class="stat-label">Flagged</div></div></div>
+    </div>
+
+    <!-- Call list + transcript viewer -->
+    <div style="display:grid;grid-template-columns:320px 1fr;gap:16px;align-items:start">
+
+      <!-- Call list -->
+      <div>
+        <div style="font-family:'Black Ops One',sans-serif;font-size:13px;letter-spacing:.08em;color:var(--muted);margin-bottom:10px">RECENT CALLS</div>
+        <div id="callList" style="display:flex;flex-direction:column;gap:8px"></div>
+      </div>
+
+      <!-- Transcript panel -->
+      <div style="background:var(--surface);border:1px solid var(--border);border-radius:14px;padding:20px;min-height:300px" id="transcriptPanel">
+        <div style="color:var(--muted);font-size:13px;text-align:center;padding:40px 0">← Select a call to review its transcript</div>
+      </div>
+    </div>
+  </div>
 
 <div class="toast" id="toast"></div>
 
@@ -347,6 +378,116 @@ function showToast(msg, type) {
 }
 
 connectWS();
+
+// ==================== TRAINING PAGE ====================
+async function loadTraining() {
+  // Stats
+  try {
+    const s = await fetch('/api/training/stats').then(r => r.json());
+    document.getElementById('tsCalls').textContent   = s.total_calls   || 0;
+    document.getElementById('tsTurns').textContent   = s.total_turns   || 0;
+    document.getElementById('tsFlagged').textContent = s.flagged_count || 0;
+  } catch(e) {}
+
+  // Call list
+  try {
+    const calls = await fetch('/api/training/calls').then(r => r.json());
+    const list  = document.getElementById('callList');
+    list.innerHTML = '';
+    if (!calls.length) {
+      list.innerHTML = '<div style="color:var(--muted);font-size:13px">No calls logged yet.</div>';
+      return;
+    }
+    calls.forEach(c => {
+      const hasFlag = c.has_flags;
+      const card = document.createElement('div');
+      card.style.cssText = 'background:var(--surface);border:1px solid var(--border);border-radius:10px;padding:12px 14px;cursor:pointer;transition:border-color .2s';
+      card.onmouseenter = () => card.style.borderColor = 'var(--red)';
+      card.onmouseleave = () => card.style.borderColor = 'var(--border)';
+      card.onclick = () => loadTranscript(c.call_sid, card);
+      const time  = new Date(c.started_at).toLocaleString([], { month:'short', day:'numeric', hour:'2-digit', minute:'2-digit' });
+      card.innerHTML =
+        '<div style="display:flex;justify-content:space-between;align-items:center">' +
+          '<div style="font-weight:700;font-size:13px">' + (c.customer_name || 'Unknown') + '</div>' +
+          (hasFlag ? '<span style="background:#450a0a;color:#f87171;border-radius:100px;padding:2px 8px;font-size:10px;font-weight:700">FLAGGED</span>' : '') +
+        '</div>' +
+        '<div style="font-size:11px;color:var(--muted);margin-top:3px">' + (c.phone || '') + ' · ' + c.turns + ' turns</div>' +
+        '<div style="font-size:11px;color:var(--muted)">' + time + '</div>';
+      list.appendChild(card);
+    });
+  } catch(e) { console.error(e); }
+}
+
+async function loadTranscript(callSid, cardEl) {
+  // Highlight selected card
+  document.querySelectorAll('#callList > div').forEach(el => el.style.background = 'var(--surface)');
+  if (cardEl) cardEl.style.background = 'var(--surface2)';
+
+  const panel = document.getElementById('transcriptPanel');
+  panel.innerHTML = '<div style="color:var(--muted);font-size:13px;text-align:center;padding:20px">Loading...</div>';
+
+  try {
+    const turns = await fetch('/api/training/calls/' + callSid).then(r => r.json());
+    if (!turns.length) { panel.innerHTML = '<div style="color:var(--muted);padding:20px">No turns found.</div>'; return; }
+
+    const name = turns.find(t => t.customer_name)?.customer_name || 'Unknown';
+    let html = '<div style="font-family:'Black Ops One',sans-serif;font-size:16px;margin-bottom:16px;letter-spacing:.06em">' + name + ' — Transcript</div>';
+
+    turns.forEach(t => {
+      const isAI       = t.speaker === 'ai';
+      const isFlagged  = t.flagged;
+      const bg         = isAI ? 'var(--surface2)' : '#1e1e1e';
+      const border     = isFlagged ? '1px solid #ef4444' : '1px solid var(--border)';
+      const label      = isAI ? '🤖 AI' : '👤 Customer';
+      const labelColor = isAI ? 'var(--orange)' : 'var(--gold)';
+      const time       = new Date(t.created_at).toLocaleTimeString([], { hour:'2-digit', minute:'2-digit', second:'2-digit' });
+      const cleanMsg   = t.message.replace('[ORDER_COMPLETE]', '').trim();
+      const cart       = t.cart_snapshot ? JSON.parse(t.cart_snapshot) : [];
+      const cartHtml   = cart.length ? '<div style="font-size:10px;color:var(--muted);margin-top:4px">Cart: ' + cart.map(i => i.qty + 'x ' + i.name).join(', ') + '</div>' : '';
+
+      html +=
+        '<div style="background:' + bg + ';border:' + border + ';border-radius:10px;padding:12px 14px;margin-bottom:8px">' +
+          '<div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:6px">' +
+            '<span style="font-size:11px;font-weight:700;color:' + labelColor + '">' + label + '</span>' +
+            '<div style="display:flex;align-items:center;gap:8px">' +
+              '<span style="font-size:10px;color:var(--muted)">' + time + '</span>' +
+              (isAI && !isFlagged
+                ? '<button onclick="flagTurn(' + t.id + ', this)" style="background:#450a0a;border:1px solid #7f1d1d;color:#f87171;border-radius:6px;padding:2px 8px;font-size:10px;font-weight:700;cursor:pointer">🚩 Flag</button>'
+                : '') +
+              (isFlagged
+                ? '<span style="background:#450a0a;color:#f87171;border-radius:6px;padding:2px 8px;font-size:10px;font-weight:700">🚩 ' + (t.flag_reason || 'Flagged') + '</span>'
+                : '') +
+            '</div>' +
+          '</div>' +
+          '<div style="font-size:13px">' + cleanMsg + '</div>' +
+          cartHtml +
+        '</div>';
+    });
+
+    panel.innerHTML = html;
+  } catch(e) { panel.innerHTML = '<div style="color:#f87171;padding:20px">Error loading transcript.</div>'; }
+}
+
+async function flagTurn(id, btn) {
+  const reason = prompt('Why is this response bad? (e.g. "Wrong item added", "Didn't understand order")') || 'Bad response';
+  if (!reason) return;
+  try {
+    await fetch('/api/training/flag/' + id, { method:'POST', headers:{'Content-Type':'application/json'}, body: JSON.stringify({ reason }) });
+    btn.textContent = '🚩 ' + reason;
+    btn.style.cursor = 'default';
+    btn.onclick = null;
+    showToast('🚩 Flagged for review', 'info');
+    document.getElementById('tsFlagged').textContent =
+      parseInt(document.getElementById('tsFlagged').textContent || '0') + 1;
+  } catch(e) { showToast('Error flagging', 'error'); }
+}
+
+// Override showPage to load training data when tab opens
+const _origShowPage = showPage;
+showPage = function(p, btn) {
+  _origShowPage(p, btn);
+  if (p === 'training') loadTraining();
+};
 </script>
 </body>
 </html>
