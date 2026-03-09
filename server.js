@@ -182,6 +182,29 @@ function getMenuText() {
   return ALL_ITEMS.map(i => `"${i.name}" $${i.price.toFixed(2)}`).join('\n');
 }
 
+// Extract a clean name from speech, handling spelled-out names like "J. A. Y. D. E. E. P."
+function extractName(speech) {
+  let s = speech.trim();
+
+  // Handle spelled-out: "J A Y D E E P" or "J. A. Y. D. E. E. P."
+  const spelledOut = s.match(/^[a-z](?:[\s.,]+[a-z]){2,}/i);
+  if (spelledOut) {
+    const joined = spelledOut[0].replace(/[\s.,]+/g, '');
+    return joined.charAt(0).toUpperCase() + joined.slice(1).toLowerCase();
+  }
+
+  // Strip common prefixes
+  s = s
+    .replace(/^(my name is |i\'m |i am |it\'s |its |call me |actually |the name is )/i, '')
+    .replace(/\.$/, '')
+    .trim();
+
+  // Take first 1-2 words, capitalise each
+  return s.split(/\s+/).slice(0, 2)
+    .map(w => w.charAt(0).toUpperCase() + w.slice(1).toLowerCase())
+    .join(' ');
+}
+
 // ==================== KDS BROADCAST + SMS ====================
 function broadcastKDS(data) {
   wssKDS.clients.forEach(c => {
@@ -283,29 +306,43 @@ async function placeOrder(session) {
 }
 
 // ==================== CART LOGIC ====================
+// Strategy: look for an exact menu item name inside the AI's confirmation text.
+// The AI is instructed to say "Got it, added [EXACT ITEM NAME]."
+// Matching on the AI text (not the customer speech) avoids false matches from
+// partial words in the customer's sentence (e.g. "bacon egg and cheese" also
+// matches "Turkey Bacon Egg and Cheese" because "bacon","egg","cheese" all appear).
 function updateCartFromAI(session, userSpeech, aiText) {
-  const isConfirming = /\b(added|got it|adding|sure|one .* coming|i added)\b/i.test(aiText);
+  const isConfirming = /\b(added|got it|adding|sure|i added)\b/i.test(aiText);
   if (!isConfirming) return;
 
-  let bestMatch = null, bestScore = 0;
+  const aiLower = aiText.toLowerCase();
 
-  ALL_ITEMS.forEach(item => {
-    const nameLower = item.name.toLowerCase();
-    const combined  = (userSpeech + ' ' + aiText).toLowerCase();
-    const words     = nameLower.split(' ').filter(w => w.length > 2);
-    const score     = words.filter(w => combined.includes(w)).length;
+  // Pass 1: look for an exact menu item name inside the AI response (most reliable)
+  // Sort by name length descending so longer/more-specific names match first.
+  const byLength = [...ALL_ITEMS].sort((a, b) => b.name.length - a.name.length);
+  let matched = byLength.find(item => aiLower.includes(item.name.toLowerCase()));
 
-    if (score >= 2 && (score > bestScore || (score === bestScore && item.name.length > (bestMatch?.name.length || 0)))) {
-      bestScore  = score;
-      bestMatch  = item;
-    }
-  });
+  // Pass 2: if AI didn't echo the full name, fall back to word-overlap on AI text only
+  if (!matched) {
+    let bestScore = 0;
+    byLength.forEach(item => {
+      const words = item.name.toLowerCase().split(' ').filter(w => w.length > 2);
+      const score = words.filter(w => aiLower.includes(w)).length;
+      // Require ALL significant words to match to avoid partial hits
+      if (score === words.length && score > bestScore) {
+        bestScore = score;
+        matched   = item;
+      }
+    });
+  }
 
-  if (bestMatch) {
-    const existing = session.cart.find(c => c.id === bestMatch.id);
+  if (matched) {
+    const existing = session.cart.find(c => c.id === matched.id);
     if (existing) existing.qty += 1;
-    else session.cart.push({ ...bestMatch, qty: 1, note: '' });
-    console.log(`🛒 Cart: ${bestMatch.name}`);
+    else session.cart.push({ ...matched, qty: 1, note: '' });
+    console.log(`🛒 Cart: ${matched.name}`);
+  } else {
+    console.log(`⚠️  Cart: no item matched in AI text: "${aiText.slice(0, 80)}"`);
   }
 }
 
@@ -332,14 +369,20 @@ FULL MENU:
 ${getMenuText()}
 
 RULES:
-- Match what the customer says to the closest menu item. Make your best guess.
-- "bacon and cheese" = Bacon, Egg and Cheese
-- "taylor ham" or "pork roll" = Taylor Ham Egg and Cheese
-- "steak" alone = NY Steak Platter
-- "chicken" alone = NY Chicken Platter
-- "sausage" alone = Sausage Egg and Cheese
-- When adding an item say EXACTLY: "Got it, added [EXACT ITEM NAME]. Anything else?"
-- When customer says done/that's it/checkout/confirm: summarize order with total including 8% tax, then end with [ORDER_COMPLETE]
+- Match what the customer says to the MOST SPECIFIC menu item. Rules:
+  * "bacon egg and cheese" or "bacon and cheese" = "Bacon, Egg and Cheese" (NOT Turkey Bacon)
+  * "turkey bacon" = "Turkey Bacon Egg and Cheese"
+  * "beef bacon" = "Beef Bacon Egg and Cheese"
+  * "chicken platter" or "chicken" alone = "NY Chicken Platter" (NOT Chicken and Shrimp)
+  * "chicken and shrimp" or "shrimp and chicken" = "NY Chicken and Shrimp Platter"
+  * "steak" alone = "NY Steak Platter" (NOT Chicken and Steak)
+  * "chicken and steak" = "NY Chicken and Steak Platter"
+  * "taylor ham" or "pork roll" = "Taylor Ham Egg and Cheese"
+  * "sausage" alone = "Sausage Egg and Cheese"
+  * "egg and cheese" alone = "Egg and Cheese"
+- When adding an item ALWAYS say EXACTLY: "Got it, added [FULL EXACT ITEM NAME FROM MENU]. Anything else?"
+  The exact item name must appear word-for-word as it appears in the menu list above.
+- When customer says done/that's it/checkout/confirm: read back the order with total including 8% tax, then end with [ORDER_COMPLETE]
 - If cart is empty at checkout, ask what they want
 - Never make up items not on the menu`;
 
@@ -417,21 +460,46 @@ wssVoice.on('connection', async (ws, req) => {
       if (!userSpeech) return;
       console.log(`[${callSid}] Customer: "${userSpeech}"`);
 
+      // Name correction mid-order ("correct my name", "my name is actually X")
+      if (session.step === 'ordering' &&
+          /\b(correct|fix|change|update|my name is|name is actually|call me)\b/i.test(userSpeech)) {
+        const corrected = extractName(userSpeech);
+        if (corrected && corrected.length >= 2) {
+          session.customerName = corrected;
+          try {
+            await dbUpsertCustomer(corrected, session.callerPhone);
+            console.log(`[${callSid}] Name corrected to: ${corrected}`);
+          } catch (err) { console.error('DB name update error:', err.message); }
+          ws.send(JSON.stringify({
+            type: 'text',
+            token: `Got it, I updated your name to ${corrected}. Sorry about that! ${session.cart.length ? 'Want to continue with your order?' : 'What can I get for you today?'}`,
+            last: true
+          }));
+          return;
+        }
+      }
+
       // New customer — collect name first
       if (session.step === 'get_name') {
-        // Extract just the name (strip "my name is", "I'm", etc.)
-        const name = userSpeech
-          .replace(/^(my name is |i'm |i am |it's |its )/i, '')
-          .trim()
-          .split(' ')
-          .slice(0, 2)        // first + last name max
-          .map(w => w.charAt(0).toUpperCase() + w.slice(1).toLowerCase())
-          .join(' ');
+        const name = extractName(userSpeech);
+
+        // If it sounds like a food order rather than a name, ask again
+        const foodWords = ALL_ITEMS.flatMap(item => item.name.toLowerCase().split(' ').filter(w => w.length > 3));
+        const lowerSpeech = userSpeech.toLowerCase();
+        const soundsLikeFood = foodWords.some(w => lowerSpeech.includes(w));
+
+        if (soundsLikeFood || !name || name.length < 2) {
+          ws.send(JSON.stringify({
+            type: 'text',
+            token: 'I just need your name first to look up your account. What is your name please?',
+            last: true
+          }));
+          return;
+        }
 
         session.customerName = name;
         session.step = 'ordering';
 
-        // Save to DB immediately so we have them on record
         try {
           const cust = await dbUpsertCustomer(name, session.callerPhone);
           session.dbCustomerId = cust.id;
