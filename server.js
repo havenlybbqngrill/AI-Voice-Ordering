@@ -511,8 +511,24 @@ wssKDS.on('connection', async ws => {
 
   ws.send(JSON.stringify({ type: 'init', orders: liveOrders }));
 
+  // Keep-alive ping every 30s to prevent Heroku H15 idle timeout (55s limit)
+  ws.isAlive = true;
+  ws.on('pong', () => { ws.isAlive = true; });
+  const pingInterval = setInterval(() => {
+    if (ws.readyState === ws.OPEN) {
+      ws.ping();
+      // Also send a JSON ping so browser clients (which dont support ws ping frames) stay alive
+      ws.send(JSON.stringify({ type: 'ping' }));
+    } else {
+      clearInterval(pingInterval);
+    }
+  }, 30000);
+  ws.on('close', () => clearInterval(pingInterval));
+
   ws.on('message', async raw => {
+    // Handle pong from browser clients
     let data; try { data = JSON.parse(raw); } catch { return; }
+    if (data.type === 'pong') return;
 
     if (data.type === 'advance_order') {
       const order = liveOrders.find(o => o.num === data.num);
