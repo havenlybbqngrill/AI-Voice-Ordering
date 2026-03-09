@@ -71,6 +71,24 @@ async function initDB() {
       unit_price  NUMERIC(10,2),
       line_total  NUMERIC(10,2)
     );
+
+    CREATE TABLE IF NOT EXISTS conversation_logs (
+      id            SERIAL PRIMARY KEY,
+      call_sid      TEXT,
+      customer_id   INTEGER REFERENCES customers(id),
+      customer_name TEXT,
+      phone         TEXT,
+      turn_index    INTEGER,
+      speaker       TEXT,        -- 'customer' or 'ai'
+      message       TEXT,
+      cart_snapshot JSONB,       -- cart state at this turn
+      flagged       BOOLEAN DEFAULT FALSE,
+      flag_reason   TEXT,
+      created_at    TIMESTAMPTZ DEFAULT NOW()
+    );
+
+    CREATE INDEX IF NOT EXISTS idx_conv_call_sid ON conversation_logs(call_sid);
+    CREATE INDEX IF NOT EXISTS idx_conv_flagged  ON conversation_logs(flagged) WHERE flagged = TRUE;
   `);
   console.log('✅ Database tables ready');
 }
@@ -140,6 +158,29 @@ async function dbGetCustomerStats(customerId) {
     [customerId]
   );
   return rows[0];
+}
+
+// Log every conversation turn for training data
+async function dbLogTurn(callSid, customerId, customerName, phone, turnIndex, speaker, message, cart) {
+  try {
+    await pool.query(
+      `INSERT INTO conversation_logs
+         (call_sid, customer_id, customer_name, phone, turn_index, speaker, message, cart_snapshot)
+       VALUES ($1,$2,$3,$4,$5,$6,$7,$8)`,
+      [callSid, customerId || null, customerName || null, phone || null,
+       turnIndex, speaker, message, JSON.stringify(cart || [])]
+    );
+  } catch (err) {
+    console.error('Log turn error:', err.message);
+  }
+}
+
+// Flag a specific turn as a bad AI response (for training review)
+async function dbFlagTurn(id, reason) {
+  await pool.query(
+    'UPDATE conversation_logs SET flagged=TRUE, flag_reason=$1 WHERE id=$2',
+    [reason || 'Bad response', id]
+  );
 }
 
 // ==================== IN-MEMORY (live orders for KDS) ====================
@@ -400,6 +441,12 @@ RULES:
 
   updateCartFromAI(session, userSpeech, aiText);
 
+  // Log both turns for training data
+  const t = session.turnIndex || 0;
+  await dbLogTurn(session.callSid, session.dbCustomerId, session.customerName, session.callerPhone, t,     'customer', userSpeech, session.cart);
+  await dbLogTurn(session.callSid, session.dbCustomerId, session.customerName, session.callerPhone, t + 1, 'ai',       aiText,     session.cart);
+  session.turnIndex = (session.turnIndex || 0) + 2;
+
   const orderComplete = aiText.includes('[ORDER_COMPLETE]');
   return { text: aiText.replace('[ORDER_COMPLETE]', '').trim(), orderComplete };
 }
@@ -414,7 +461,8 @@ wssVoice.on('connection', async (ws, req) => {
     callSid, callerPhone: '',
     customerName: null, dbCustomerId: null,
     favourites: [],
-    cart: [], history: [], step: 'get_name'
+    cart: [], history: [], step: 'get_name',
+    turnIndex: 0
   };
   callSessions[callSid] = session;
 
@@ -627,6 +675,116 @@ app.get('/api/customers/:id/favourites', async (req, res) => {
 
 // Live orders (KDS)
 app.get('/api/live-orders', (req, res) => res.json(liveOrders));
+
+// ---- Training data endpoints ----
+
+// Full conversation for a call
+app.get('/api/training/calls', async (req, res) => {
+  try {
+    const { rows } = await pool.query(
+      `SELECT call_sid, customer_name, phone,
+              COUNT(*) as turns,
+              MIN(created_at) as started_at,
+              MAX(created_at) as ended_at,
+              BOOL_OR(flagged) as has_flags
+       FROM conversation_logs
+       GROUP BY call_sid, customer_name, phone
+       ORDER BY started_at DESC
+       LIMIT 200`
+    );
+    res.json(rows);
+  } catch (err) { res.status(500).json({ error: err.message }); }
+});
+
+app.get('/api/training/calls/:callSid', async (req, res) => {
+  try {
+    const { rows } = await pool.query(
+      `SELECT * FROM conversation_logs WHERE call_sid=$1 ORDER BY turn_index`,
+      [req.params.callSid]
+    );
+    res.json(rows);
+  } catch (err) { res.status(500).json({ error: err.message }); }
+});
+
+// Flag a bad AI response
+app.post('/api/training/flag/:id', async (req, res) => {
+  try {
+    await dbFlagTurn(req.params.id, req.body.reason || 'Bad response');
+    res.json({ flagged: true });
+  } catch (err) { res.status(500).json({ error: err.message }); }
+});
+
+// Export all flagged turns (for fixing the prompt / fine-tuning)
+app.get('/api/training/flagged', async (req, res) => {
+  try {
+    const { rows } = await pool.query(
+      `SELECT cl.*,
+              -- grab the customer turn just before this AI turn
+              LAG(message) OVER (PARTITION BY call_sid ORDER BY turn_index) as customer_message
+       FROM conversation_logs cl
+       WHERE flagged = TRUE
+       ORDER BY created_at DESC`
+    );
+    res.json(rows);
+  } catch (err) { res.status(500).json({ error: err.message }); }
+});
+
+// Export full dataset as JSONL (for fine-tuning)
+app.get('/api/training/export', async (req, res) => {
+  try {
+    const { rows } = await pool.query(
+      `SELECT call_sid, speaker, message, cart_snapshot, turn_index, created_at
+       FROM conversation_logs
+       ORDER BY call_sid, turn_index`
+    );
+
+    // Group by call, build conversation pairs
+    const calls = {};
+    rows.forEach(r => {
+      if (!calls[r.call_sid]) calls[r.call_sid] = [];
+      calls[r.call_sid].push(r);
+    });
+
+    const lines = [];
+    Object.values(calls).forEach(turns => {
+      for (let i = 0; i < turns.length - 1; i++) {
+        if (turns[i].speaker === 'customer' && turns[i+1]?.speaker === 'ai') {
+          lines.push(JSON.stringify({
+            input:  turns[i].message,
+            output: turns[i+1].message,
+            cart:   turns[i].cart_snapshot,
+            call:   turns[i].call_sid
+          }));
+        }
+      }
+    });
+
+    res.setHeader('Content-Type', 'application/x-ndjson');
+    res.setHeader('Content-Disposition', 'attachment; filename="training_data.jsonl"');
+    res.send(lines.join('\n'));
+  } catch (err) { res.status(500).json({ error: err.message }); }
+});
+
+// Summary stats for the training dashboard
+app.get('/api/training/stats', async (req, res) => {
+  try {
+    const { rows } = await pool.query(
+      `SELECT
+         COUNT(DISTINCT call_sid)                              as total_calls,
+         COUNT(*)                                              as total_turns,
+         COUNT(*) FILTER (WHERE speaker='customer')           as customer_turns,
+         COUNT(*) FILTER (WHERE speaker='ai')                 as ai_turns,
+         COUNT(*) FILTER (WHERE flagged=TRUE)                 as flagged_count,
+         COUNT(DISTINCT call_sid) FILTER (
+           WHERE call_sid IN (
+             SELECT DISTINCT call_sid FROM conversation_logs WHERE flagged=TRUE
+           )
+         )                                                    as calls_with_flags
+       FROM conversation_logs`
+    );
+    res.json(rows[0]);
+  } catch (err) { res.status(500).json({ error: err.message }); }
+});
 
 app.get('/health', (req, res) => res.json({ status: 'ok', liveOrders: liveOrders.length }));
 
