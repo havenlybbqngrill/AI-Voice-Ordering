@@ -503,7 +503,7 @@ async function loadTranscript(callSid, cardEl) {
     if (!turns.length) { panel.innerHTML = '<div style="color:var(--muted);padding:20px">No turns found.</div>'; return; }
 
     const name = turns.find(t => t.customer_name)?.customer_name || 'Unknown';
-    let html = '<div style="font-family:'Black Ops One',sans-serif;font-size:16px;margin-bottom:16px;letter-spacing:.06em">' + name + ' — Transcript</div>';
+    let html = '<div style="font-family:Black Ops One,sans-serif;font-size:16px;margin-bottom:16px;letter-spacing:.06em">' + name + ' — Transcript</div>';
 
     turns.forEach(t => {
       const isAI       = t.speaker === 'ai';
