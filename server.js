@@ -93,7 +93,7 @@ wssKDS.on('connection', ws => {
 wssConv.on('connection', (ws, req) => {
   const url = new URL(req.url, 'http://localhost');
   const callSid = url.searchParams.get('callSid') || 'unknown';
-  console.log(`[WS Connected] ${callSid}`);
+  console.log('[WS Connected] ' + callSid);
 
   if (!callSessions[callSid]) {
     callSessions[callSid] = { callSid, phone: '', name: null, cart: [], history: [], step: 'get_name' };
@@ -103,7 +103,6 @@ wssConv.on('connection', (ws, req) => {
   ws.on('message', async raw => {
     try {
       const msg = JSON.parse(raw);
-      console.log(`[${callSid}] type=${msg.type}`);
 
       if (msg.type === 'setup') {
         session.phone = msg.from || '';
@@ -117,60 +116,58 @@ wssConv.on('connection', (ws, req) => {
       if (msg.type === 'prompt') {
         const speech = (msg.voicePrompt || '').trim();
         if (!speech) return;
-        console.log(`[${callSid}] Said: "${speech}"`);
+        console.log('[' + callSid + '] Said: "' + speech + '"');
 
         if (session.step === 'get_name') {
           session.name = speech;
           session.step = 'ordering';
           customers[session.phone] = { name: speech };
-          ws.send(JSON.stringify({ type: 'text', token: `Nice to meet you ${speech}! What would you like to order? We have breakfast sandwiches and NY style platters.`, last: true }));
+          ws.send(JSON.stringify({ type: 'text', token: 'Nice to meet you ' + speech + '! What would you like to order? We have breakfast sandwiches and NY style platters.', last: true }));
           return;
         }
 
         const reply = await getAIReply(session, speech);
         if (reply.done) {
           const order = placeOrder(session);
-          const items = order.items.map(i => `${i.qty} ${i.name}`).join(', ');
-          ws.send(JSON.stringify({ type: 'text', token: `Perfect! Order number ${order.num}. You ordered ${items}. Total is ${fmt(order.total)} with tax. Thank you for calling Outwater Grill!`, last: true }));
+          const items = order.items.map(i => i.qty + ' ' + i.name).join(', ');
+          ws.send(JSON.stringify({ type: 'text', token: 'Perfect! Order number ' + order.num + '. You ordered ' + items + '. Total is ' + fmt(order.total) + ' with tax. Thank you for calling Outwater Grill!', last: true }));
           setTimeout(() => delete callSessions[callSid], 5000);
         } else {
           ws.send(JSON.stringify({ type: 'text', token: reply.text, last: true }));
         }
       }
     } catch (err) {
-      console.error(`[${callSid}] Error:`, err.message);
-      console.error('Full error:', err);
+      console.error('Error: ' + err.message);
       ws.send(JSON.stringify({ type: 'text', token: 'Sorry about that. What would you like to order?', last: true }));
     }
   });
 
-  ws.on('close', () => console.log(`[${callSid}] closed`));
+  ws.on('close', () => console.log('[' + callSid + '] closed'));
 });
 
 async function getAIReply(session, speech) {
   const cartText = session.cart.length
-    ? session.cart.map(i => `${i.qty}x ${i.name}`).join(', ')
+    ? session.cart.map(i => i.qty + 'x ' + i.name).join(', ')
     : 'empty';
 
-  const system = `You are the AI phone ordering assistant for Outwater Grill in Garfield NJ.
-Keep responses SHORT - max 2 sentences. Be friendly.
-Customer: ${session.name}
-Cart: ${cartText}
-Menu: ${MENU.map(i => `${i.name} ${fmt(i.price)}`).join(', ')}
-
-Rules:
-- Match customer speech to closest menu item
-- Confirm: "Got it, added Bacon Egg and Cheese. Anything else?"
-- When done/confirm/checkout: end response with [DONE]
-- Tax 8%
-- Always match something, never say not found`;
+  const system = 'You are the AI phone ordering assistant for Outwater Grill in Garfield NJ.\n' +
+    'Keep responses SHORT - max 2 sentences. Be friendly.\n' +
+    'Customer: ' + session.name + '\n' +
+    'Cart: ' + cartText + '\n' +
+    'Menu: ' + MENU.map(i => i.name + ' ' + fmt(i.price)).join(', ') + '\n\n' +
+    'Rules:\n' +
+    '- Match customer speech to closest menu item\n' +
+    '- When you add an item, say exactly: "Got it, added [EXACT ITEM NAME]. Anything else?"\n' +
+    '- When customer says done/confirm/checkout: summarize and end with [DONE]\n' +
+    '- Tax 8%\n' +
+    '- Always match something, never say not found';
 
   session.history.push({ role: 'user', content: speech });
 
   const response = await anthropic.messages.create({
     model: 'claude-haiku-4-5-20251001',
     max_tokens: 150,
-    system,
+    system: system,
     messages: session.history
   });
 
@@ -178,23 +175,18 @@ Rules:
   session.history.push({ role: 'assistant', content: text });
   if (session.history.length > 12) session.history = session.history.slice(-12);
 
-  // Only add item if AI explicitly confirms the exact item name
+  // Only add items that AI explicitly names in confirmation
   const aiLower = text.toLowerCase();
-  if (/added|got it|adding|i have/.test(aiLower)) {
+  if (/got it, added|added/.test(aiLower)) {
     MENU.forEach(item => {
       if (aiLower.includes(item.name.toLowerCase())) {
         if (!session.cart.find(c => c.id === item.id)) {
-          session.cart.push({ ...item, qty: 1 });
-          console.log('Added to cart: ' + item.name);
+          session.cart.push({ id: item.id, name: item.name, price: item.price, qty: 1 });
+          console.log('Cart + ' + item.name);
         }
       }
     });
   }
-          console.log(`Added: ${item.name}`);
-        }
-      }
-    }
-  });
 
   return { text: text.replace('[DONE]', '').trim(), done: text.includes('[DONE]') };
 }
@@ -208,12 +200,13 @@ function placeOrder(session) {
     id: '#' + num, num,
     customer: session.name || 'Customer',
     phone: session.phone,
-    items: [...session.cart],
+    items: JSON.parse(JSON.stringify(session.cart)),
     subtotal, tax, total, status: 'new',
     timeStr: new Date().toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })
   };
   orders.push(order);
   broadcastKDS({ type: 'new_order', order });
+  console.log('Order #' + num + ' placed - ' + fmt(total));
   return order;
 }
 
@@ -223,25 +216,20 @@ app.post('/voice/incoming', (req, res) => {
 
   callSessions[callSid] = {
     callSid, phone,
-    name: customers[phone]?.name || null,
+    name: customers[phone] ? customers[phone].name : null,
     cart: [], history: [],
     step: customers[phone] ? 'ordering' : 'get_name'
   };
 
   const greeting = customers[phone]
-    ? `Welcome back ${customers[phone].name}! What can I get for you today?`
+    ? 'Welcome back ' + customers[phone].name + '! What can I get for you today?'
     : 'Welcome to Outwater Grill! May I have your name please?';
 
-  const wsUrl = `wss://outwater-grill-d64d7ae4fd7e.herokuapp.com/conversation?callSid=${callSid}`;
+  const wsUrl = 'wss://outwater-grill-d64d7ae4fd7e.herokuapp.com/conversation?callSid=' + callSid;
 
-  const twiml = `<?xml version="1.0" encoding="UTF-8"?>
-<Response>
-  <Connect>
-    <ConversationRelay url="${wsUrl}" welcomeGreeting="${greeting}" />
-  </Connect>
-</Response>`;
+  const twiml = '<?xml version="1.0" encoding="UTF-8"?>\n<Response>\n  <Connect>\n    <ConversationRelay url="' + wsUrl + '" welcomeGreeting="' + greeting + '" />\n  </Connect>\n</Response>';
 
-  console.log(`Call from ${phone} | ${callSid}`);
+  console.log('Call from ' + phone + ' | ' + callSid);
   res.type('text/xml').send(twiml);
 });
 
@@ -265,4 +253,4 @@ app.post('/api/orders/:num/advance', (req, res) => {
 });
 
 const PORT = process.env.PORT || 3000;
-server.listen(PORT, () => console.log(`Outwater Grill running on port ${PORT}`));
+server.listen(PORT, () => console.log('Outwater Grill running on port ' + PORT));
