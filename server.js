@@ -139,7 +139,8 @@ wssConv.on('connection', (ws, req) => {
       }
     } catch (err) {
       console.error(`[${callSid}] Error:`, err.message);
-      ws.send(JSON.stringify({ type: 'text', token: 'One moment please.', last: true }));
+      console.error('Full error:', err);
+      ws.send(JSON.stringify({ type: 'text', token: 'Sorry about that. What would you like to order?', last: true }));
     }
   });
 
