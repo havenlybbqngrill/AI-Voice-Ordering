@@ -541,7 +541,7 @@ async function loadTranscript(callSid, cardEl) {
 }
 
 async function flagTurn(id, btn) {
-  const reason = prompt('Why is this response bad? (e.g. "Wrong item added", "Didn't understand order")') || 'Bad response';
+  const reason = prompt('Why is this response bad? (e.g. Wrong item added, Did not understand order)') || 'Bad response';
   if (!reason) return;
   try {
     await fetch('/api/training/flag/' + id, { method:'POST', headers:{'Content-Type':'application/json'}, body: JSON.stringify({ reason }) });
