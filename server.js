@@ -564,24 +564,48 @@ wssVoice.on('connection', async (ws, req) => {
         return;
       }
 
-      // Returning customer picking a favourite by number
-      if (session.step === 'ordering' && session.favourites.length > 0) {
-        const numMatch = userSpeech.match(/\b([1-5]|one|two|three|four|five)\b/i);
-        const numMap   = { one:1, two:2, three:3, four:4, five:5 };
-        if (numMatch) {
-          const pick = parseInt(numMatch[1]) || numMap[numMatch[1].toLowerCase()];
-          const fav  = session.favourites[pick - 1];
-          if (fav) {
-            const menuItem = ALL_ITEMS.find(i => i.name === fav.item_name);
-            if (menuItem) {
-              session.cart.push({ ...menuItem, qty: 1, note: '' });
-              ws.send(JSON.stringify({
-                type:  'text',
-                token: `Got it, added ${menuItem.name}. Anything else or shall I confirm your order?`,
-                last:  true
-              }));
-              return;
+      // Cancel / clear cart
+      if (/^(cancel|never mind|forget it|start over|clear( my)? (cart|order))$/i.test(userSpeech.trim())) {
+        session.cart = [];
+        ws.send(JSON.stringify({
+          type: 'text',
+          token: 'No problem, I cleared your order. What would you like instead?',
+          last: true
+        }));
+        return;
+      }
+
+      // Returning customer picking favourites by number — handles multiple e.g. "number 3 and 5"
+      if (session.step === 'ordering' && session.favourites && session.favourites.length > 0) {
+        const numMap  = { one:1, two:2, three:3, four:4, five:5 };
+        // Find ALL numbers mentioned: "number 3 and 5" → [3, 5], "give me one and two" → [1, 2]
+        const matches = [...userSpeech.matchAll(/\b(one|two|three|four|five|[1-5])\b/gi)];
+        const picks   = matches.map(m => parseInt(m[1]) || numMap[m[1].toLowerCase()]).filter(Boolean);
+
+        if (picks.length > 0) {
+          const added = [];
+          picks.forEach(pick => {
+            const fav = session.favourites[pick - 1];
+            if (fav) {
+              const menuItem = ALL_ITEMS.find(i => i.name === fav.item_name);
+              if (menuItem) {
+                const existing = session.cart.find(c => c.id === menuItem.id);
+                if (existing) existing.qty += 1;
+                else session.cart.push({ ...menuItem, qty: 1, note: '' });
+                added.push(menuItem.name);
+                console.log(`🛒 Favourite #${pick} added: ${menuItem.name}`);
+              }
             }
+          });
+
+          if (added.length > 0) {
+            const itemList = added.join(' and ');
+            ws.send(JSON.stringify({
+              type: 'text',
+              token: `Got it, added ${itemList}. Anything else or shall I confirm your order?`,
+              last: true
+            }));
+            return;
           }
         }
       }
@@ -835,6 +859,21 @@ app.get('/api/training/stats', async (req, res) => {
 });
 
 app.get('/health', (req, res) => res.json({ status: 'ok', liveOrders: liveOrders.length }));
+
+// One-time: fix a customer name by phone number
+// Usage: POST /api/customers/fix-name  { "phone": "+19735722617", "name": "Jaydeep" }
+app.post('/api/customers/fix-name', async (req, res) => {
+  try {
+    const { phone, name } = req.body;
+    if (!phone || !name) return res.status(400).json({ error: 'phone and name required' });
+    const result = await pool.query(
+      'UPDATE customers SET name=$1 WHERE phone=$2 RETURNING *',
+      [name, phone]
+    );
+    if (!result.rows.length) return res.status(404).json({ error: 'Customer not found' });
+    res.json({ updated: true, customer: result.rows[0] });
+  } catch (err) { res.status(500).json({ error: err.message }); }
+});
 
 // ==================== START ====================
 const PORT = process.env.PORT || 3000;
