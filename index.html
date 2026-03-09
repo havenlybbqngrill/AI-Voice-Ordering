@@ -314,6 +314,7 @@ function connectWS() {
     if (data.type === 'init') {
       orders = data.orders; renderKDS();
     } else if (data.type === 'new_order') {
+      console.log('🔔 new_order received:', data.order);
       orders.push(data.order); renderKDS();
       playBell();
       showToast('🔔 New order ' + data.order.id + ' — ' + data.order.customer, 'success');
@@ -336,60 +337,64 @@ function send(msg) { if (ws && ws.readyState === 1) ws.send(JSON.stringify(msg))
 function advanceOrder(num) { send({ type: 'advance_order', num }); }
 function resendSMS(num) { send({ type: 'send_sms', num }); showToast('📱 Sending SMS...', 'info'); }
 
+function buildLiveCard(o) {
+  const isSMSSent = smsSent.has(o.num);
+  let actionHTML = '';
+  if (o.status === 'new') {
+    actionHTML = '<button class="btn btn-red" onclick="advanceOrder(' + o.num + ')">▶ Start Preparing</button>';
+  } else if (o.status === 'prep') {
+    actionHTML = '<button class="btn btn-orange" onclick="advanceOrder(' + o.num + ')">✓ Mark Ready & SMS Customer</button>';
+  } else if (o.status === 'ready') {
+    actionHTML = '<button class="btn btn-green" onclick="advanceOrder(' + o.num + ')">✓ Complete & Remove</button>';
+    actionHTML += isSMSSent
+      ? '<div class="sms-badge">✅ SMS sent — customer notified</div>'
+      : '<button class="btn btn-sms" onclick="resendSMS(' + o.num + ')">📱 Resend SMS</button>';
+  }
+  const card = document.createElement('div');
+  card.className = 'order-card';
+  card.innerHTML =
+    '<div class="card-stripe"></div>' +
+    '<div class="card-body">' +
+      '<div class="card-top">' +
+        '<div class="order-num">' + o.id + '</div>' +
+        '<div class="order-time">' + o.timeStr + '</div>' +
+      '</div>' +
+      '<div class="order-customer">👤 ' + o.customer + ' · ' + (o.phone || '') + '</div>' +
+      '<div>' + (o.items || []).map(i =>
+        '<div class="order-item">' +
+          '<div class="item-qty">' + (i.qty || 1) + '</div>' +
+          '<div class="item-name">' + (i.name || i.item_name || '') + '</div>' +
+          '<div class="item-price">$' + ((i.price || i.unit_price || 0) * (i.qty || 1)).toFixed(2) + '</div>' +
+        '</div>'
+      ).join('') + '</div>' +
+      '<div class="order-total">Total: $' + parseFloat(o.total || 0).toFixed(2) + '</div>' +
+      '<div class="card-actions">' + actionHTML + '</div>' +
+    '</div>';
+  return card;
+}
+
 function renderKDS() {
-  const cols = { new: 'colNew', prep: 'colPrep', ready: 'colReady' };
-  Object.values(cols).forEach(id => document.getElementById(id).innerHTML = '');
+  const liveCols = { new: 'colNew', prep: 'colPrep', ready: 'colReady' };
+
+  // Clear only the 3 live columns — never touch colDone
+  Object.values(liveCols).forEach(id => document.getElementById(id).innerHTML = '');
   const counts = { new: 0, prep: 0, ready: 0 };
 
   orders.forEach(o => {
     counts[o.status] = (counts[o.status] || 0) + 1;
-    const colId = cols[o.status]; if (!colId) return;
-    const isSMSSent = smsSent.has(o.num);
-
-    let actionHTML = '';
-    if (o.status === 'new') {
-      actionHTML = '<button class="btn btn-red" onclick="advanceOrder(' + o.num + ')">▶ Start Preparing</button>';
-    } else if (o.status === 'prep') {
-      actionHTML = '<button class="btn btn-orange" onclick="advanceOrder(' + o.num + ')">✓ Mark Ready & SMS Customer</button>';
-    } else if (o.status === 'ready') {
-      actionHTML = '<button class="btn btn-green" onclick="advanceOrder(' + o.num + ')">✓ Complete & Remove</button>';
-      if (isSMSSent) {
-        actionHTML += '<div class="sms-badge">✅ SMS sent — customer notified</div>';
-      } else {
-        actionHTML += '<button class="btn btn-sms" onclick="resendSMS(' + o.num + ')">📱 Resend SMS</button>';
-      }
-    }
-
-    const card = document.createElement('div');
-    card.className = 'order-card';
-    card.innerHTML =
-      '<div class="card-stripe"></div>' +
-      '<div class="card-body">' +
-        '<div class="card-top">' +
-          '<div class="order-num">' + o.id + '</div>' +
-          '<div class="order-time">' + o.timeStr + '</div>' +
-        '</div>' +
-        '<div class="order-customer">👤 ' + o.customer + ' · ' + (o.phone || '') + '</div>' +
-        '<div>' + o.items.map(i =>
-          '<div class="order-item">' +
-            '<div class="item-qty">' + i.qty + '</div>' +
-            '<div class="item-name">' + i.name + '</div>' +
-            '<div class="item-price">$' + (i.price * i.qty).toFixed(2) + '</div>' +
-          '</div>'
-        ).join('') + '</div>' +
-        '<div class="order-total">Total: $' + o.total.toFixed(2) + '</div>' +
-        '<div class="card-actions">' + actionHTML + '</div>' +
-      '</div>';
-    document.getElementById(colId).appendChild(card);
+    const colId = liveCols[o.status];
+    if (!colId) return;
+    document.getElementById(colId).appendChild(buildLiveCard(o));
   });
 
-  if (!orders.length) {
-    Object.values(cols).forEach(id => {
-      document.getElementById(id).innerHTML = '<div class="empty-state">🍽️<br>No orders yet</div>';
-    });
-  }
-
-  ['new','prep','ready'].forEach(s => {
+  // Empty state per column — only if that column has no orders
+  ['new', 'prep', 'ready'].forEach(s => {
+    if (counts[s] === 0) {
+      document.getElementById(liveCols[s]).innerHTML =
+        '<div class="empty-state">🍽️<br>' +
+        (s === 'new' ? 'Waiting for orders' : s === 'prep' ? 'Nothing cooking' : 'All picked up') +
+        '</div>';
+    }
     const cap = s.charAt(0).toUpperCase() + s.slice(1);
     document.getElementById('stat' + cap).textContent = counts[s] || 0;
     document.getElementById('badge' + cap).textContent = counts[s] || 0;
