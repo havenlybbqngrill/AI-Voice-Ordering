@@ -218,12 +218,203 @@ const MENU = {
     { id: 25, name: 'Grilled Salmon Platter',         price: 13.99 },
     { id: 26, name: 'NY Falafel Platter',             price: 8.99  },
     { id: 27, name: 'NY Chicken Platter',             price: 8.99  },
+  ],
+  'Lunch Specials': [
+    { id: 101, name: 'Pork Chop over Rice and Salad', price: 14.99 },
+    { id: 102, name: 'Mexican Cheese Burger',          price: 9.99  },
+    { id: 103, name: 'Turkey Melt',                    price: 9.99  },
+    { id: 104, name: 'Italian Cheese Burger',          price: 9.99  },
+    { id: 105, name: 'Ruben',                          price: 9.99  },
+    { id: 106, name: 'Tuna Melt',                      price: 7.99  },
+    { id: 107, name: 'Double Cheese Burger',           price: 11.99 },
+    { id: 108, name: 'Double Bacon Cheese Burger',     price: 14.99 },
+    { id: 109, name: 'Chicken Parm',                   price: 9.99  },
+    { id: 110, name: 'Meat Ball Parm Half Hero',       price: 9.99  },
+    { id: 111, name: 'Bacon Cheese Burger',            price: 10.99 },
+    { id: 112, name: 'Gyro',                           price: 8.99  },
+    { id: 113, name: 'Philly Cheese Steak',            price: 8.99  },
+    { id: 114, name: 'Cheese Steak Half Hero',         price: 9.99  },
+    { id: 115, name: 'Cheese Burger',                  price: 7.99  },
+    { id: 116, name: 'Grilled Chicken Sandwich',       price: 8.99  },
+  ],
+  'Mexican Grill': [
+    { id: 201, name: 'Burrito',          price: 11.99 },
+    { id: 202, name: 'Cheese Quesadilla',price: 7.99  },
+    { id: 203, name: 'Taco Mix',         price: 14.99 },
+    { id: 204, name: 'Tacos 4 Pcs',     price: 12.99 },
+    { id: 205, name: 'Torta',           price: 11.99 },
+    { id: 206, name: 'Quesadilla',      price: 10.99 },
   ]
 };
 const ALL_ITEMS = Object.values(MENU).flat();
 
+// Full modifier rules per item (from menu JSON)
+const ITEM_MODIFIERS = {
+  // ── LUNCH SPECIALS ──────────────────────────────────────────────
+  101: { // Pork Chop over Rice and Salad
+    sides: { free: [], paid: { 'French Fries': 1.00, 'Onion Rings': 2.00, 'Cheese Fries': 2.00 }, noOption: 'No Fries' }
+  },
+  102: { // Mexican Cheese Burger
+    sides: { free: [], paid: { 'French Fries': 1.00, 'Onion Rings': 2.00, 'Cheese Fries': 2.00 }, noOption: 'No Fries' }
+  },
+  103: { // Turkey Melt
+    required: { bread: ['White', 'Whole Wheat', 'Rye'], default: 'White' },
+    cheese:   { free: ['American', 'Mozzarella', 'Provolone', 'Swiss', 'No Cheese'], default: 'American' },
+    sides:    { free: [], paid: { 'French Fries': 1.00, 'Onion Rings': 2.00, 'Cheese Fries': 2.00 }, noOption: 'No Fries' }
+  },
+  104: { // Italian Cheese Burger - comes with grilled onions & peppers + mozzarella
+    description: 'comes with grilled onions and peppers and mozzarella cheese',
+    sides: { free: [], paid: { 'French Fries': 1.00, 'Onion Rings': 2.00, 'Cheese Fries': 2.00 }, noOption: 'No Fries' }
+  },
+  105: { // Ruben - comes on Rye with Russian dressing and sauerkraut
+    description: 'comes on Rye bread with Russian dressing and sauerkraut',
+    required: { meat: ['Pastrami', 'Corn Beef'], default: null },
+    paid_required: { 'Pastrami and Corn Beef Mix': 1.99 },
+    sides: { free: [], paid: { 'French Fries': 1.00, 'Onion Rings': 2.00, 'Cheese Fries': 2.00 }, noOption: 'No Fries' }
+  },
+  106: { // Tuna Melt
+    required: { bread: ['White', 'Whole Wheat', 'Rye'], default: 'White' },
+    cheese:   { free: ['American', 'Mozzarella', 'Provolone', 'Swiss', 'No Cheese'], default: 'American' },
+    sides:    { free: [], paid: { 'French Fries': 1.00, 'Onion Rings': 2.00, 'Cheese Fries': 2.00 }, noOption: 'No Fries' }
+  },
+  107: { // Double Cheese Burger - comes with lettuce, tomato, mayo
+    description: 'comes with lettuce, tomato and mayo',
+    cheese:   { free: ['Swiss', 'American', 'Provolone', 'Mozzarella'] },
+    veggies:  { free: ['Lettuce', 'Tomato', 'Onion', 'Mushroom'], paid: { 'Pickles': 0.49, 'Jalapeno': 0.49, 'Fried Onions': 0.59 } },
+    condiments: { free: ['Mayonnaise', 'Hot Sauce', 'Ketchup', 'Mustard'] },
+    sides:    { free: [], paid: { 'French Fries': 1.00, 'Onion Rings': 2.00, 'Cheese Fries': 2.00 }, noOption: 'No Fries' }
+  },
+  108: { // Double Bacon Cheese Burger - comes with lettuce, tomato, mayo
+    description: 'comes with lettuce, tomato and mayo',
+    cheese:   { free: ['Swiss', 'American', 'Provolone', 'Mozzarella'] },
+    veggies:  { free: ['Lettuce', 'Tomato', 'Onion', 'Mushroom'], paid: { 'Pickles': 0.49, 'Jalapeno': 0.49, 'Fried Onions': 0.59 } },
+    condiments: { free: ['Mayonnaise', 'Hot Sauce', 'Ketchup', 'Mustard'] },
+    sides:    { free: [], paid: { 'French Fries': 1.00, 'Onion Rings': 2.00, 'Cheese Fries': 2.00 }, noOption: 'No Fries' }
+  },
+  109: { // Chicken Parm
+    sides: { free: [], paid: { 'French Fries': 1.00, 'Onion Rings': 2.00, 'Cheese Fries': 2.00 }, noOption: 'No Fries' }
+  },
+  110: { // Meat Ball Parm Half Hero
+    description: 'comes with meatballs, marinara sauce and cheese',
+    cheese:   { free: ['American Cheese'] },
+    sides:    { free: [], paid: { 'French Fries': 1.00, 'Onion Rings': 2.00, 'Cheese Fries': 2.00 }, noOption: 'No Fries' }
+  },
+  111: { // Bacon Cheese Burger - comes with lettuce, tomato, mayo
+    description: 'comes with lettuce, tomato and mayo',
+    cheese:   { free: ['Swiss', 'American', 'Provolone', 'Mozzarella'] },
+    veggies:  { free: ['Lettuce', 'Tomato', 'Onion', 'Mushroom'], paid: { 'Pickles': 0.49, 'Jalapeno': 0.49, 'Fried Onions': 0.59 } },
+    condiments: { free: ['Mayonnaise', 'Hot Sauce', 'Ketchup', 'Mustard'] },
+    sides:    { free: [], paid: { 'French Fries': 1.00, 'Onion Rings': 2.00, 'Cheese Fries': 2.00 }, noOption: 'No Fries' }
+  },
+  112: { // Gyro
+    required: { meat: ['Chicken', 'Beef'], default: null },
+    veggies:  { free: ['Lettuce', 'Tomato', 'Onion'], paid: { 'Pickles': 0.49, 'Jalapeno': 0.49 } },
+    sides:    { free: [], paid: { 'French Fries': 1.00, 'Onion Rings': 2.00, 'Cheese Fries': 2.00 }, noOption: 'No Fries' }
+  },
+  113: { // Philly Cheese Steak - comes with fried onions and green peppers
+    description: 'comes with fried onions and green peppers',
+    bread:    { free: ['Toasted', 'Not Toasted'] },
+    cheese:   { free: ['American', 'Mozzarella', 'Provolone', 'Swiss', 'No Cheese'], default: 'American' },
+    extras:   { paid: { 'Extra Cheese': 1.00, 'Lettuce': 0.50, 'Tomato': 0.50 } },
+    condiments: { free: ['Salt', 'Pepper', 'Ketchup', 'Mayonnaise', 'Light Ketchup', 'Light Mayo', 'Hot Sauce', 'Mustard'], paid: { 'Butter': 0.50, 'Jelly': 0.50 } },
+    sides:    { free: [], paid: { 'French Fries': 1.00, 'Onion Rings': 2.00, 'Cheese Fries': 2.00 }, noOption: 'No Fries' }
+  },
+  114: { // Cheese Steak Half Hero
+    required: { meat: ['Chicken', 'Steak'], default: 'Chicken' },
+    bread:    { free: ['Toasted', 'Not Toasted'] },
+    cheese:   { free: ['American', 'Mozzarella', 'Provolone', 'Swiss', 'No Cheese'], default: 'American' },
+    veggies:  { free: ['Fried Onions', 'Green Peppers', 'Mushrooms'] },
+    condiments: { free: ['Salt', 'Pepper', 'Ketchup', 'Mayonnaise', 'Light Ketchup', 'Light Mayo', 'Hot Sauce', 'Mustard'], paid: { 'Butter': 0.50, 'Jelly': 0.50 } },
+    sides:    { free: [], paid: { 'French Fries': 1.00, 'Onion Rings': 2.00, 'Cheese Fries': 2.00 }, noOption: 'No Fries' }
+  },
+  115: { // Cheese Burger
+    cheese:   { free: ['American', 'Mozzarella', 'Provolone', 'Swiss', 'No Cheese'], default: 'American' },
+    veggies:  { free: ['Lettuce', 'Tomato', 'Onion', 'Mushroom'], paid: { 'Pickles': 0.49, 'Jalapeno': 0.49, 'Fried Onions': 0.59 } },
+    condiments: { free: ['Mayonnaise', 'Hot Sauce', 'Ketchup', 'Mustard'] },
+    sides:    { free: [], paid: { 'French Fries': 1.00, 'Onion Rings': 2.00, 'Cheese Fries': 2.00, 'American Cheese On Fries': 2.00 }, noOption: 'No Fries' },
+    extras:   { paid: { 'Burger Patty': 2.99, 'Bacon': 2.99, 'Turkey Bacon': 2.99, 'Beef Bacon': 2.99 } }
+  },
+  116: { // Grilled Chicken Sandwich - comes with lettuce, tomato, mayo
+    description: 'comes with lettuce, tomato and mayo',
+    bread:    { free: ['Half Hero'] },
+    cheese:   { paid: { 'American Cheese': 0.99, 'Provolone Cheese': 0.99, 'Mozzarella Cheese': 0.99, 'Swiss Cheese': 0.99 } },
+    veggies:  { free: ['Lettuce', 'Tomato', 'Onion', 'Mushroom'], paid: { 'Pickles': 0.49, 'Jalapeno': 0.49, 'Fried Onions': 0.59 } },
+    condiments: { free: ['Mayonnaise', 'Hot Sauce', 'Ketchup', 'Mustard'] },
+    extras:   { paid: { 'Bacon': 2.99 } },
+    sides:    { free: [], paid: { 'French Fries': 1.00, 'Onion Rings': 2.00, 'Cheese Fries': 2.00 }, noOption: 'No Fries' }
+  },
+  // ── MEXICAN GRILL ──────────────────────────────────────────────
+  201: { // Burrito
+    description: 'comes with rice, cheese, black beans, Pico de Gallo, sour cream and salsa on the side',
+    required: { meat: ['Chicken'], default: null },
+    paid_required: { 'Steak': 2.00, 'Shrimp': 2.00, 'Carne Enchilada': 2.00, 'Chorizo': 2.00 },
+    sides:    { free: [], paid: { 'French Fries': 1.00, 'Onion Rings': 2.00, 'Cheese Fries': 2.00 }, noOption: 'No Fries' }
+  },
+  202: { // Cheese Quesadilla
+    sides:    { free: [], paid: { 'French Fries': 1.00, 'Onion Rings': 2.00, 'Cheese Fries': 2.00, 'American Cheese On Fries': 2.00 }, noOption: 'No Fries' }
+  },
+  203: { // Taco Mix
+    required: { meat: ['Chicken', 'Steak', 'Shrimp', 'Chorizo', 'Carne Enchilada'], default: null, maxChoices: 2 }
+  },
+  204: { // Tacos 4 Pcs
+    description: 'comes with cilantro, cheese, avocado and taco sauce on the side',
+    required: { meat: ['Chicken'], default: null },
+    paid_required: { 'Steak': 2.00, 'Shrimp': 2.00, 'Carne Enchilada': 2.00, 'Chorizo': 2.00 }
+  },
+  205: { // Torta
+    meat: { free: ['Chicken'], paid: { 'Steak': 2.00, 'Carne Enchilada': 2.00, 'Chorizo': 2.00, 'Shrimp': 2.00 } },
+    sides: { free: [], paid: { 'French Fries': 1.00, 'Onion Rings': 2.00, 'Cheese Fries': 2.00 }, noOption: 'No Fries' }
+  },
+  206: { // Quesadilla
+    description: 'comes with pico de gallo, sour cream and salsa on the side',
+    required: { meat: ['Chicken'], default: null },
+    paid_required: { 'Steak': 3.00, 'Shrimp': 3.00 },
+    extras:   { paid: { 'Green Pepper': 0.59, 'Onions': 0.59 } },
+    sides:    { free: [], paid: { 'French Fries': 1.00, 'Onion Rings': 2.00, 'Cheese Fries': 2.00 }, noOption: 'No Fries' }
+  }
+};
+
+// Build a human-readable modifier guide for the AI prompt for a given item id
+function getModifierGuide(itemId) {
+  const m = ITEM_MODIFIERS[itemId];
+  if (!m) return '';
+  const lines = [];
+  if (m.description) lines.push(`  ℹ️  This item ${m.description}`);
+  if (m.required) {
+    const opts = m.required.meat || m.required.bread;
+    const paidOpts = m.paid_required ? Object.entries(m.paid_required).map(([k,v])=>`${k} +$${v.toFixed(2)}`).join(', ') : '';
+    const maxC = m.required.maxChoices ? ` (up to ${m.required.maxChoices})` : '';
+    lines.push(`  🔴 REQUIRED — choose meat/bread${maxC}: ${opts.join(', ')}${paidOpts ? ' | Paid upgrade: ' + paidOpts : ''}`);
+  }
+  if (m.bread?.free) lines.push(`  🍞 Bread (free choice): ${m.bread.free.join(', ')}`);
+  if (m.cheese?.free) lines.push(`  🧀 Cheese (free choice): ${m.cheese.free.join(', ')}`);
+  if (m.cheese?.paid) lines.push(`  🧀 Cheese (paid): ${Object.entries(m.cheese.paid).map(([k,v])=>`${k} +$${v.toFixed(2)}`).join(', ')}`);
+  if (m.veggies?.free) lines.push(`  🥬 Veggies free: ${m.veggies.free.join(', ')}`);
+  if (m.veggies?.paid) lines.push(`  🥬 Veggies paid: ${Object.entries(m.veggies.paid).map(([k,v])=>`${k} +$${v.toFixed(2)}`).join(', ')}`);
+  if (m.condiments?.free) lines.push(`  🧂 Condiments free: ${m.condiments.free.join(', ')}`);
+  if (m.condiments?.paid) lines.push(`  🧂 Condiments paid: ${Object.entries(m.condiments.paid).map(([k,v])=>`${k} +$${v.toFixed(2)}`).join(', ')}`);
+  if (m.extras?.paid) lines.push(`  ➕ Extras paid: ${Object.entries(m.extras.paid).map(([k,v])=>`${k} +$${v.toFixed(2)}`).join(', ')}`);
+  if (m.meat?.free || m.meat?.paid) {
+    if (m.meat?.free) lines.push(`  🥩 Meat free: ${m.meat.free.join(', ')}`);
+    if (m.meat?.paid) lines.push(`  🥩 Meat paid upgrade: ${Object.entries(m.meat.paid).map(([k,v])=>`${k} +$${v.toFixed(2)}`).join(', ')}`);
+  }
+  if (m.sides) {
+    const paidSides = Object.entries(m.sides.paid).map(([k,v])=>`${k} +$${v.toFixed(2)}`).join(', ');
+    lines.push(`  🍟 Sides: ${paidSides}, ${m.sides.noOption || 'No Side'} (free)`);
+  }
+  return lines.join('\n');
+}
+
 function getMenuText() {
-  return ALL_ITEMS.map(i => `"${i.name}" $${i.price.toFixed(2)}`).join('\n');
+  let text = '';
+  for (const [cat, items] of Object.entries(MENU)) {
+    text += `\n--- ${cat} ---\n`;
+    text += items.map(i => {
+      const guide = getModifierGuide(i.id);
+      return `"${i.name}" $${i.price.toFixed(2)}${guide ? '\n' + guide : ''}`;
+    }).join('\n');
+  }
+  return text;
 }
 
 // Extract a clean name from speech, handling spelled-out names like "J. A. Y. D. E. E. P."
@@ -424,7 +615,7 @@ function updateCartFromAI(session, userSpeech, aiText) {
     });
   }
 
-  // Extract modifiers from [MODIFIERS: ...] tag in AI response
+  // Extract free modifiers from [MODIFIERS: ...] tag
   let note = '';
   const modMatch = aiText.match(/\[MODIFIERS:\s*([^\]]+)\]/i);
   if (modMatch) {
@@ -432,18 +623,26 @@ function updateCartFromAI(session, userSpeech, aiText) {
     console.log(`📝 Modifiers: ${note}`);
   }
 
+  // Extract paid add-on price from [ADDON_PRICE: X.XX] tag
+  let addonPrice = 0;
+  const addonMatch = aiText.match(/\[ADDON_PRICE:\s*([\d.]+)\]/i);
+  if (addonMatch) {
+    addonPrice = parseFloat(addonMatch[1]) || 0;
+    console.log(`💰 Add-on price: +$${addonPrice}`);
+  }
+
   if (matched) {
     const existing = session.cart.find(c => c.id === matched.id);
     if (existing) {
       existing.qty += 1;
-      // Append new modifiers if different
       if (note && !existing.note.includes(note)) {
         existing.note = [existing.note, note].filter(Boolean).join(', ');
       }
+      existing.price = (existing.price || matched.price) + addonPrice;
     } else {
-      session.cart.push({ ...matched, qty: 1, note });
+      session.cart.push({ ...matched, qty: 1, note, price: matched.price + addonPrice });
     }
-    console.log(`🛒 Cart: ${matched.name}${note ? ' (' + note + ')' : ''}`);
+    console.log(`🛒 Cart: ${matched.name}${note ? ' (' + note + ')' : ''}${addonPrice ? ' +$' + addonPrice : ''}`);
   } else {
     console.log(`⚠️  Cart: no item matched in AI text: "${aiText.slice(0, 80)}"`);
   }
@@ -476,26 +675,59 @@ RULES:
   * "bacon egg and cheese" or "bacon and cheese" = "Bacon, Egg and Cheese" (NOT Turkey Bacon)
   * "turkey bacon" = "Turkey Bacon Egg and Cheese"
   * "beef bacon" = "Beef Bacon Egg and Cheese"
-  * "chicken platter" or "chicken" alone = "NY Chicken Platter" (NOT Chicken and Shrimp)
+  * "chicken platter" or "chicken" alone (breakfast context) = "NY Chicken Platter" (NOT Chicken and Shrimp)
   * "chicken and shrimp" or "shrimp and chicken" = "NY Chicken and Shrimp Platter"
-  * "steak" alone = "NY Steak Platter" (NOT Chicken and Steak)
+  * "steak platter" or "steak" alone (platter context) = "NY Steak Platter" (NOT Chicken and Steak)
   * "chicken and steak" = "NY Chicken and Steak Platter"
   * "taylor ham" or "pork roll" = "Taylor Ham Egg and Cheese"
   * "sausage" alone = "Sausage Egg and Cheese"
   * "egg and cheese" alone = "Egg and Cheese"
+  * "philly" or "philly steak" = "Philly Cheese Steak"
+  * "cheese steak hero" or "steak hero" = "Cheese Steak Half Hero"
+  * "meatball" or "meatball hero" = "Meat Ball Parm Half Hero"
+  * "chicken parm" = "Chicken Parm"
+  * "double burger" = "Double Cheese Burger"
+  * "double bacon burger" = "Double Bacon Cheese Burger"
+  * "bacon burger" = "Bacon Cheese Burger"
+  * "cheese burger" or "burger" alone = "Cheese Burger"
+  * "gyro" alone = ask chicken or beef (REQUIRED choice)
+  * "burrito" alone = ask chicken (free) or steak/shrimp/chorizo/carne enchilada (paid)
+  * "quesadilla" = "Quesadilla" (with meat, $10.99) NOT "Cheese Quesadilla" ($7.99) unless they say "cheese quesadilla"
+  * "tacos" = "Tacos 4 Pcs" unless they say "taco mix"
+  * "grilled chicken" or "grilled chicken sandwich" = "Grilled Chicken Sandwich"
+  * "pork chop" = "Pork Chop over Rice and Salad"
 - When adding an item ALWAYS say EXACTLY: "Got it, added [FULL EXACT ITEM NAME FROM MENU]. Anything else?"
   The exact item name must appear word-for-word as it appears in the menu list above.
-- MODIFIERS: If the customer mentions any customizations (no mayo, extra salt, well done, no onions, extra hot sauce, etc.)
-  append a modifiers tag on the SAME line, like:
-  "Got it, added Bacon, Egg and Cheese. [MODIFIERS: no mayo, extra salt] Anything else?"
-  Common modifiers to listen for:
-  * No/without/hold the: mayo, salt, pepper, onions, ketchup, hot sauce, cheese, bread/roll, lettuce, tomato
-  * Extra/add: salt, pepper, hot sauce, ketchup, mayo, cheese, onions, lettuce, tomato
-  * Preparation: well done, light, crispy, toasted, untoasted, wrap instead of bread
-  * Side: with rice, with fries, white rice, brown rice, no rice, extra rice
-  * Spice level: mild, medium, hot, extra hot, no spice
-  If no modifiers mentioned, do NOT include the [MODIFIERS:] tag.
-- When customer says done/that is it/checkout/confirm: read back the order WITH all modifiers, total including 8% tax, then end with [ORDER_COMPLETE]
+- MODIFIERS — STRICT RULES, only accept from the allowed lists below:
+
+  BREAKFAST SANDWICHES — allowed free condiments (customer can say yes/no/add/no):
+    Salt, Pepper, Ketchup, Light Ketchup, Mayonnaise, Light Mayo, Hot Sauce, Mustard
+  BREAKFAST SANDWICHES — allowed PAID add-ons (tell customer the price):
+    Extra Bacon +$2.99, 3 Eggs +$0.99, Extra Cheese +$0.59, Butter +$0.50, Jelly +$0.50
+
+  NY PLATTERS — allowed free condiments:
+    Salt, Pepper, Hot Sauce, Ketchup, Mustard
+  NY PLATTERS — no paid add-ons available
+
+  MODIFIER RULES — STRICT, per item only:
+  * Each item in the menu above lists exactly what modifications are allowed (free and paid)
+  * FREE options → accept, include in [MODIFIERS: ...]
+  * PAID options → confirm price first: "I can add [item] for +$[price], shall I add that?"
+    If customer says yes → include in [MODIFIERS: +Item $X.XX] and [ADDON_PRICE: X.XX]
+  * REQUIRED choices (marked 🔴) → ALWAYS ask before confirming the item if not stated
+  * If customer asks for ANYTHING not listed for that specific item → say:
+    "Sorry, that option is not available for this item."
+  * NEVER give free upgrades — if cheese costs extra, always quote the price first
+  * If no modifiers, do NOT include [MODIFIERS:] tag
+
+  FORMAT when adding item with free modifiers:
+  "Got it, added Turkey Melt on White bread with Swiss cheese. [MODIFIERS: White bread, Swiss cheese] Anything else?"
+  FORMAT when adding paid upgrade:
+  "Got it, added Steak for +$2.00 on your Burrito. [MODIFIERS: +Steak] [ADDON_PRICE: 2.00] Anything else?"
+  FORMAT when required choice missing:
+  "What meat would you like with that — Chicken (free), Steak +$2.00, or Shrimp +$2.00?"
+
+- When customer says done/that is it/checkout/confirm: read back the order WITH all modifiers and add-on charges, total including 8% tax, then end with [ORDER_COMPLETE]
 - If cart is empty at checkout, ask what they want
 - Never make up items not on the menu`;
 
