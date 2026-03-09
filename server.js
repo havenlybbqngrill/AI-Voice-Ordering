@@ -453,19 +453,41 @@ function broadcastKDS(data) {
 }
 
 async function sendSMSToCustomer(order) {
+  const fromNum = process.env.TWILIO_PHONE_NUMBER;
+  const toNum   = order.phone;
+  if (!fromNum || !toNum) {
+    console.error(`SMS error: missing phone — from=${fromNum} to=${toNum}`);
+    return false;
+  }
   try {
-    await twilioClient.messages.create({
+    const msg = await twilioClient.messages.create({
       body: `Hi ${order.customer}! Your order ${order.id} from Outwater Grill is READY for pickup! 🍔 See you soon!`,
-      from: process.env.TWILIO_PHONE_NUMBER,
-      to: order.phone
+      from: fromNum,
+      to:   toNum
     });
-    console.log(`📱 SMS sent to ${order.phone}`);
+    console.log(`📱 SMS sent to ${toNum} — SID: ${msg.sid}`);
     return true;
   } catch (err) {
-    console.error('SMS error:', err.message);
+    console.error(`SMS error: ${err.message} | from=${fromNum} to=${toNum} | code=${err.code}`);
     return false;
   }
 }
+
+// Test SMS endpoint — POST /api/test-sms with { "to": "+1XXXXXXXXXX" }
+app.post('/api/test-sms', async (req, res) => {
+  const to = req.body.to || process.env.TWILIO_PHONE_NUMBER;
+  try {
+    const msg = await twilioClient.messages.create({
+      body: 'Outwater Grill SMS test — system working!',
+      from: process.env.TWILIO_PHONE_NUMBER,
+      to
+    });
+    res.json({ success: true, sid: msg.sid, to });
+  } catch (err) {
+    res.status(500).json({ success: false, error: err.message, code: err.code,
+      from: process.env.TWILIO_PHONE_NUMBER, to });
+  }
+});
 
 // ==================== KDS WEBSOCKET ====================
 wssKDS.on('connection', async ws => {
@@ -736,14 +758,20 @@ RULES:
   * NEVER give free upgrades — if cheese costs extra, always quote the price first
   * If no modifiers, do NOT include [MODIFIERS:] tag
 
-  FORMAT when adding item with free modifiers:
-  "Got it, added Turkey Melt on White bread with Swiss cheese. [MODIFIERS: White bread, Swiss cheese] Anything else?"
-  FORMAT when adding paid upgrade:
-  "Got it, added Steak for +$2.00 on your Burrito. [MODIFIERS: +Steak] [ADDON_PRICE: 2.00] Anything else?"
+  FORMAT — follow exactly, tags are for kitchen system only, NEVER spoken aloud:
+  With modifiers:   "Got it, added Turkey Melt. [MODIFIERS: White bread, Swiss cheese] Anything else?"
+  With paid addon:  "Got it, added Extra Bacon for +$2.99. [MODIFIERS: +Extra Bacon] [ADDON_PRICE: 2.99] Anything else?"
+  No modifiers:     "Got it, added Bacon Egg and Cheese. Anything else?"
+  CRITICAL: ALWAYS include [MODIFIERS:] whenever customer chose bread, cheese, side, condiment, or any option.
   FORMAT when required choice missing:
   "What meat would you like with that — Chicken (free), Steak +$2.00, or Shrimp +$2.00?"
 
-- When customer says done/that is it/checkout/confirm: read back the order WITH all modifiers and add-on charges, total including 8% tax, then end with [ORDER_COMPLETE]
+- CHECKOUT RULES — only place order when customer EXPLICITLY confirms with words like:
+  "yes", "confirm", "that's it", "place the order", "go ahead", "done", "that's all", "sounds good", "correct"
+  NEVER place order for: "repeat", "read back", "what did I order", "what's in my order", "no" (disagreement)
+  If customer says "repeat my order" or "what did I order" → just list their items and ask "Shall I place this order?"
+  If customer says "no" after a readback → ask "What would you like to change?"
+  Only output [ORDER_COMPLETE] after the customer has explicitly said YES to the final readback.
 - If cart is empty at checkout, ask what they want
 - Never make up items not on the menu`;
 
@@ -755,6 +783,8 @@ RULES:
   });
 
   const aiText = response.content[0].text;
+  console.log(`[AI RAW] ${aiText}`);
+
   session.history.push({ role: 'user', content: userSpeech });
   session.history.push({ role: 'assistant', content: aiText });
   if (session.history.length > 16) session.history = session.history.slice(-16);
@@ -768,7 +798,13 @@ RULES:
   session.turnIndex = (session.turnIndex || 0) + 2;
 
   const orderComplete = aiText.includes('[ORDER_COMPLETE]');
-  return { text: aiText.replace('[ORDER_COMPLETE]', '').trim(), orderComplete };
+  // Strip ALL internal tags before speaking — never read them aloud to customer
+  const spokenText = aiText
+    .replace(/\[ORDER_COMPLETE\]/g, '')
+    .replace(/\[MODIFIERS:[^\]]*\]/g, '')
+    .replace(/\[ADDON_PRICE:[^\]]*\]/g, '')
+    .trim();
+  return { text: spokenText, orderComplete };
 }
 
 // ==================== CONVERSATIONRELAY WEBSOCKET ====================
