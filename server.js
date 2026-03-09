@@ -341,7 +341,7 @@ app.post('/voice/incoming', (req, res) => {
   const twiml = `<?xml version="1.0" encoding="UTF-8"?>
 <Response>
   <Connect>
-    <ConversationRelay url="${wsUrl}" welcomeGreeting="Welcome to Outwater Grill! What is your name please?" voice="Polly.Joanna" />
+    <ConversationRelay url="${wsUrl}" welcomeGreeting="Welcome to Outwater Grill! What is your name please?" ttsProvider="Amazon" voice="Polly.Joanna" />
   </Connect>
 </Response>`;
 
@@ -351,6 +351,16 @@ app.post('/voice/incoming', (req, res) => {
 
 // ==================== REST API ====================
 app.get('/', (req, res) => res.send('Outwater Grill Voice Ordering is running!'));
+app.get('/test-twiml', (req, res) => {
+  const wsUrl = 'wss://outwater-grill-d64d7ae4fd7e.herokuapp.com/conversation?callSid=test';
+  const twiml = `<?xml version="1.0" encoding="UTF-8"?>
+<Response>
+  <Connect>
+    <ConversationRelay url="${wsUrl}" welcomeGreeting="Welcome to Outwater Grill" ttsProvider="Amazon" voice="Polly.Joanna" />
+  </Connect>
+</Response>`;
+  res.type('text/xml').send(twiml);
+});
 app.get('/api/orders', (req, res) => res.json(orders));
 app.get('/api/customers', (req, res) => res.json(Object.values(customers)));
 
