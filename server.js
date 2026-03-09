@@ -676,6 +676,54 @@ app.get('/api/customers/:id/favourites', async (req, res) => {
 // Live orders (KDS)
 app.get('/api/live-orders', (req, res) => res.json(liveOrders));
 
+// Completed orders for today
+app.get('/api/orders/completed/today', async (req, res) => {
+  try {
+    const { rows } = await pool.query(
+      `SELECT o.*,
+        json_agg(json_build_object(
+          'item_name', oi.item_name,
+          'qty',       oi.qty,
+          'unit_price',oi.unit_price,
+          'line_total', oi.line_total
+        ) ORDER BY oi.id) as items
+       FROM orders o
+       LEFT JOIN order_items oi ON oi.order_id = o.id
+       WHERE o.status = 'completed'
+         AND o.created_at >= CURRENT_DATE
+       GROUP BY o.id
+       ORDER BY o.created_at DESC`
+    );
+    res.json(rows);
+  } catch (err) { res.status(500).json({ error: err.message }); }
+});
+
+// All completed orders with optional date filter
+app.get('/api/orders/completed', async (req, res) => {
+  try {
+    const { date } = req.query; // e.g. ?date=2026-03-09
+    const dateFilter = date
+      ? `AND DATE(o.created_at) = '${date}'`
+      : `AND o.created_at >= NOW() - INTERVAL '7 days'`;
+    const { rows } = await pool.query(
+      `SELECT o.*,
+        json_agg(json_build_object(
+          'item_name', oi.item_name,
+          'qty',       oi.qty,
+          'unit_price',oi.unit_price,
+          'line_total', oi.line_total
+        ) ORDER BY oi.id) as items
+       FROM orders o
+       LEFT JOIN order_items oi ON oi.order_id = o.id
+       WHERE o.status = 'completed' ${dateFilter}
+       GROUP BY o.id
+       ORDER BY o.created_at DESC
+       LIMIT 200`
+    );
+    res.json(rows);
+  } catch (err) { res.status(500).json({ error: err.message }); }
+});
+
 // ---- Training data endpoints ----
 
 // Full conversation for a call
