@@ -341,7 +341,7 @@ app.post('/voice/incoming', (req, res) => {
   const twiml = `<?xml version="1.0" encoding="UTF-8"?>
 <Response>
   <Connect>
-    <ConversationRelay url="${wsUrl}" welcomeGreeting="${welcomeGreeting}" voice="Polly.Joanna" />
+    <ConversationRelay url="${wsUrl}" welcomeGreeting="Welcome to Outwater Grill! What is your name please?" voice="Polly.Joanna" />
   </Connect>
 </Response>`;
 
