@@ -1,21 +1,352 @@
 <!DOCTYPE html>
-<html>
+<html lang="en">
 <head>
-  <title>Outwater Grill - Kitchen Dashboard</title>
-  <style>
-    body { font-family: Arial; background: #1a1a1a; color: white; padding: 20px; }
-    .order { background: #333; padding: 15px; margin: 10px 0; border-radius: 5px; }
-    h1 { color: #4CAF50; }
-  </style>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Outwater Grill — Kitchen Display</title>
+<link href="https://fonts.googleapis.com/css2?family=Black+Ops+One&family=DM+Sans:wght@400;500;600;700&display=swap" rel="stylesheet">
+<style>
+:root {
+  --red: #e8192c; --red-dark: #b5121f;
+  --orange: #f97316; --green: #16a34a;
+  --bg: #0f0f0f; --surface: #1a1a1a; --surface2: #242424;
+  --border: #2e2e2e; --text: #f0f0f0; --muted: #888; --gold: #fbbf24;
+}
+* { margin:0; padding:0; box-sizing:border-box; }
+body { font-family:'DM Sans',sans-serif; background:var(--bg); color:var(--text); min-height:100vh; }
+
+.nav {
+  background:var(--surface); border-bottom:1px solid var(--border);
+  padding:0 28px; display:flex; align-items:center; justify-content:space-between;
+  height:64px; position:sticky; top:0; z-index:100;
+}
+.logo { font-family:'Black Ops One',sans-serif; font-size:20px; letter-spacing:.06em; display:flex; align-items:center; gap:10px; }
+.logo-dot { width:10px; height:10px; border-radius:50%; background:var(--red); }
+.nav-right { display:flex; align-items:center; gap:14px; }
+.status-pill {
+  display:flex; align-items:center; gap:7px;
+  background:var(--surface2); border:1px solid var(--border);
+  border-radius:100px; padding:6px 14px; font-size:12px; font-weight:600; color:var(--muted);
+}
+.dot { width:7px; height:7px; border-radius:50%; background:#444; transition:background .3s; }
+.dot.on { background:#22c55e; box-shadow:0 0 8px #22c55e; animation:breathe 2s infinite; }
+@keyframes breathe { 0%,100%{opacity:1}50%{opacity:.5} }
+.tabs { display:flex; gap:2px; background:var(--surface2); border-radius:10px; padding:3px; }
+.tab { padding:7px 18px; border:none; border-radius:8px; background:transparent; color:var(--muted); font-family:'DM Sans',sans-serif; font-size:13px; font-weight:600; cursor:pointer; transition:all .2s; }
+.tab.active { background:var(--red); color:#fff; }
+.tab:hover:not(.active) { color:var(--text); }
+
+.main { padding:24px 28px; max-width:1600px; margin:0 auto; }
+
+.stats-bar { display:flex; gap:12px; margin-bottom:24px; align-items:center; }
+.stat-card { background:var(--surface); border:1px solid var(--border); border-radius:12px; padding:14px 22px; display:flex; align-items:center; gap:14px; min-width:140px; }
+.stat-num { font-family:'Black Ops One',sans-serif; font-size:28px; line-height:1; }
+.stat-label { font-size:11px; color:var(--muted); text-transform:uppercase; letter-spacing:.08em; margin-top:2px; }
+.stat-card.s-new .stat-num { color:var(--red); }
+.stat-card.s-prep .stat-num { color:var(--orange); }
+.stat-card.s-ready .stat-num { color:var(--green); }
+.clock { margin-left:auto; font-family:'Black Ops One',sans-serif; font-size:30px; color:var(--muted); letter-spacing:.1em; }
+
+.kds-grid { display:grid; grid-template-columns:1fr 1fr 1fr; gap:16px; }
+.col-head { display:flex; align-items:center; gap:8px; margin-bottom:14px; padding-bottom:12px; border-bottom:2px solid var(--border); }
+.col-title { font-family:'Black Ops One',sans-serif; font-size:14px; letter-spacing:.1em; }
+.col-badge { margin-left:auto; background:var(--surface2); border-radius:100px; padding:2px 10px; font-size:12px; font-weight:700; color:var(--muted); }
+.ind { width:10px; height:10px; border-radius:50%; flex-shrink:0; }
+.col-new .ind { background:var(--red); animation:blink 1.2s infinite; }
+.col-new .col-title { color:var(--red); }
+.col-prep .ind { background:var(--orange); }
+.col-prep .col-title { color:var(--orange); }
+.col-ready .ind { background:var(--green); }
+.col-ready .col-title { color:var(--green); }
+@keyframes blink { 0%,100%{opacity:1}50%{opacity:.2} }
+
+.order-card { background:var(--surface); border:1px solid var(--border); border-radius:14px; margin-bottom:12px; overflow:hidden; animation:slideIn .3s ease; }
+@keyframes slideIn { from{opacity:0;transform:translateY(8px)} to{opacity:1;transform:translateY(0)} }
+.card-stripe { height:4px; }
+.col-new .card-stripe { background:var(--red); }
+.col-prep .card-stripe { background:var(--orange); }
+.col-ready .card-stripe { background:var(--green); }
+.card-body { padding:14px 16px; }
+.card-top { display:flex; justify-content:space-between; align-items:center; margin-bottom:8px; }
+.order-num { font-family:'Black Ops One',sans-serif; font-size:26px; letter-spacing:.04em; }
+.order-time { background:var(--surface2); border-radius:6px; padding:4px 10px; font-size:11px; font-weight:600; color:var(--muted); }
+.order-customer { font-size:13px; font-weight:700; color:var(--gold); margin-bottom:10px; }
+.order-item { display:flex; align-items:center; gap:8px; padding:5px 0; border-bottom:1px solid var(--border); font-size:13px; }
+.order-item:last-child { border-bottom:none; }
+.item-qty { background:var(--red); color:#fff; border-radius:5px; width:22px; height:22px; display:flex; align-items:center; justify-content:center; font-size:11px; font-weight:700; flex-shrink:0; }
+.item-name { flex:1; font-weight:500; }
+.item-price { color:var(--muted); font-size:12px; }
+.order-total { font-size:14px; font-weight:700; text-align:right; margin:10px 0; }
+.card-actions { display:flex; flex-direction:column; gap:8px; }
+.btn { width:100%; padding:11px; border:none; border-radius:9px; font-family:'DM Sans',sans-serif; font-size:13px; font-weight:700; cursor:pointer; transition:all .2s; }
+.btn-red { background:var(--red); color:#fff; }
+.btn-red:hover { background:var(--red-dark); }
+.btn-orange { background:var(--orange); color:#fff; }
+.btn-orange:hover { background:#ea6c00; }
+.btn-green { background:var(--green); color:#fff; }
+.btn-green:hover { background:#15803d; }
+.btn-sms { background:var(--surface2); border:1px solid var(--border); color:var(--text); display:flex; align-items:center; justify-content:center; gap:6px; }
+.btn-sms:hover { border-color:var(--green); color:var(--green); }
+.sms-badge { background:#052e16; border:1px solid var(--green); color:#4ade80; font-size:12px; padding:8px 12px; border-radius:8px; text-align:center; font-weight:600; }
+.empty-state { text-align:center; padding:48px 20px; color:var(--muted); font-size:13px; }
+
+.page { display:none; }
+.page.active { display:block; }
+.page-header { display:flex; justify-content:space-between; align-items:center; margin-bottom:24px; }
+.page-title { font-family:'Black Ops One',sans-serif; font-size:28px; letter-spacing:.08em; }
+.search-input { background:var(--surface); border:1px solid var(--border); border-radius:10px; padding:10px 16px; color:var(--text); font-family:'DM Sans',sans-serif; font-size:13px; outline:none; width:260px; transition:border-color .2s; }
+.search-input:focus { border-color:var(--red); }
+.search-input::placeholder { color:var(--muted); }
+.customers-grid { display:grid; grid-template-columns:repeat(auto-fill,minmax(260px,1fr)); gap:14px; }
+.customer-card { background:var(--surface); border:1px solid var(--border); border-radius:14px; padding:18px; transition:border-color .2s; }
+.customer-card:hover { border-color:var(--red); }
+.cc-top { display:flex; align-items:center; gap:12px; margin-bottom:12px; }
+.cc-avatar { width:42px; height:42px; background:var(--red); border-radius:50%; display:flex; align-items:center; justify-content:center; font-family:'Black Ops One',sans-serif; font-size:16px; color:#fff; flex-shrink:0; }
+.cc-name { font-size:15px; font-weight:700; }
+.cc-phone { font-size:12px; color:var(--muted); margin-top:2px; }
+.cc-stats { display:flex; gap:8px; }
+.cc-stat { flex:1; background:var(--surface2); border-radius:8px; padding:8px 6px; text-align:center; }
+.cc-stat-n { font-family:'Black Ops One',sans-serif; font-size:18px; color:var(--red); }
+.cc-stat-l { font-size:10px; color:var(--muted); text-transform:uppercase; letter-spacing:.06em; margin-top:2px; }
+
+.toast { position:fixed; bottom:28px; left:50%; transform:translateX(-50%) translateY(100px); background:var(--surface2); border:1px solid var(--border); color:var(--text); border-radius:100px; padding:12px 24px; font-size:13px; font-weight:600; transition:transform .4s cubic-bezier(.34,1.56,.64,1); z-index:999; white-space:nowrap; }
+.toast.show { transform:translateX(-50%) translateY(0); }
+.toast.success { background:#052e16; border-color:var(--green); color:#4ade80; }
+.toast.info { background:#1e1e3a; border-color:#6366f1; color:#a5b4fc; }
+
+@media(max-width:900px) { .kds-grid { grid-template-columns:1fr; } }
+</style>
 </head>
 <body>
-  <h1>🍳 Outwater Grill Kitchen Orders</h1>
-  <div id="orders"></div>
-  <script>
-    const ws = new WebSocket('ws://' + window.location.host);
-    ws.onmessage = (e) => {
-      document.getElementById('orders').innerHTML = e.data;
-    };
-  </script>
+
+<nav class="nav">
+  <div class="logo"><div class="logo-dot"></div>OUTWATER GRILL KDS</div>
+  <div class="nav-right">
+    <div class="status-pill">
+      <div class="dot" id="statusDot"></div>
+      <span id="statusLabel">Connecting</span>
+    </div>
+    <div class="tabs">
+      <button class="tab active" onclick="showPage('kds',this)">🍳 Kitchen</button>
+      <button class="tab" onclick="showPage('customers',this)">👥 Customers</button>
+    </div>
+  </div>
+</nav>
+
+<div class="main">
+
+  <!-- KDS PAGE -->
+  <div class="page active" id="page-kds">
+    <div class="stats-bar">
+      <div class="stat-card s-new">
+        <span style="font-size:22px">🔴</span>
+        <div><div class="stat-num" id="statNew">0</div><div class="stat-label">New</div></div>
+      </div>
+      <div class="stat-card s-prep">
+        <span style="font-size:22px">🟠</span>
+        <div><div class="stat-num" id="statPrep">0</div><div class="stat-label">Preparing</div></div>
+      </div>
+      <div class="stat-card s-ready">
+        <span style="font-size:22px">🟢</span>
+        <div><div class="stat-num" id="statReady">0</div><div class="stat-label">Ready</div></div>
+      </div>
+      <div class="clock" id="clock"></div>
+    </div>
+    <div class="kds-grid">
+      <div class="col-new">
+        <div class="col-head"><div class="ind"></div><div class="col-title">NEW ORDERS</div><div class="col-badge" id="badgeNew">0</div></div>
+        <div id="colNew"></div>
+      </div>
+      <div class="col-prep">
+        <div class="col-head"><div class="ind"></div><div class="col-title">PREPARING</div><div class="col-badge" id="badgePrep">0</div></div>
+        <div id="colPrep"></div>
+      </div>
+      <div class="col-ready">
+        <div class="col-head"><div class="ind"></div><div class="col-title">READY FOR PICKUP</div><div class="col-badge" id="badgeReady">0</div></div>
+        <div id="colReady"></div>
+      </div>
+    </div>
+  </div>
+
+  <!-- CUSTOMERS PAGE -->
+  <div class="page" id="page-customers">
+    <div class="page-header">
+      <div class="page-title">CUSTOMERS</div>
+      <input class="search-input" id="custSearch" placeholder="Search name or phone..." oninput="renderCustomers()">
+    </div>
+    <div class="customers-grid" id="customersGrid"></div>
+  </div>
+</div>
+
+<div class="toast" id="toast"></div>
+
+<script>
+let orders = [];
+let customers = [];
+let ws;
+const smsSent = new Set(); // track which order nums got SMS
+
+// Clock
+function tick() { document.getElementById('clock').textContent = new Date().toLocaleTimeString([], { hour:'2-digit', minute:'2-digit' }); }
+tick(); setInterval(tick, 1000);
+
+function showPage(p, btn) {
+  document.querySelectorAll('.page').forEach(el => el.classList.remove('active'));
+  document.querySelectorAll('.tab').forEach(el => el.classList.remove('active'));
+  document.getElementById('page-' + p).classList.add('active');
+  btn.classList.add('active');
+  if (p === 'customers') loadCustomers();
+}
+
+// ---- WebSocket connects to /kds path ----
+function connectWS() {
+  const proto = location.protocol === 'https:' ? 'wss:' : 'ws:';
+  ws = new WebSocket(proto + '//' + location.host + '/kds');
+
+  ws.onopen = () => {
+    document.getElementById('statusDot').className = 'dot on';
+    document.getElementById('statusLabel').textContent = 'Live';
+  };
+  ws.onclose = () => {
+    document.getElementById('statusDot').className = 'dot';
+    document.getElementById('statusLabel').textContent = 'Reconnecting...';
+    setTimeout(connectWS, 3000);
+  };
+  ws.onmessage = e => {
+    const data = JSON.parse(e.data);
+    if (data.type === 'init') {
+      orders = data.orders; renderKDS();
+    } else if (data.type === 'new_order') {
+      orders.push(data.order); renderKDS();
+      playBell();
+      showToast('🔔 New order ' + data.order.id + ' — ' + data.order.customer, 'success');
+    } else if (data.type === 'order_updated') {
+      const i = orders.findIndex(o => o.num === data.order.num);
+      if (i >= 0) orders[i] = data.order;
+      renderKDS();
+    } else if (data.type === 'order_removed') {
+      orders = orders.filter(o => o.num !== data.num); renderKDS();
+    } else if (data.type === 'sms_sent') {
+      smsSent.add(data.num);
+      renderKDS();
+      showToast('📱 SMS sent to ' + data.customer, 'success');
+    }
+  };
+}
+
+function send(msg) { if (ws && ws.readyState === 1) ws.send(JSON.stringify(msg)); }
+function advanceOrder(num) { send({ type: 'advance_order', num }); }
+function resendSMS(num) { send({ type: 'send_sms', num }); showToast('📱 Sending SMS...', 'info'); }
+
+function renderKDS() {
+  const cols = { new: 'colNew', prep: 'colPrep', ready: 'colReady' };
+  Object.values(cols).forEach(id => document.getElementById(id).innerHTML = '');
+  const counts = { new: 0, prep: 0, ready: 0 };
+
+  orders.forEach(o => {
+    counts[o.status] = (counts[o.status] || 0) + 1;
+    const colId = cols[o.status]; if (!colId) return;
+    const isSMSSent = smsSent.has(o.num);
+
+    let actionHTML = '';
+    if (o.status === 'new') {
+      actionHTML = '<button class="btn btn-red" onclick="advanceOrder(' + o.num + ')">▶ Start Preparing</button>';
+    } else if (o.status === 'prep') {
+      actionHTML = '<button class="btn btn-orange" onclick="advanceOrder(' + o.num + ')">✓ Mark Ready & SMS Customer</button>';
+    } else if (o.status === 'ready') {
+      actionHTML = '<button class="btn btn-green" onclick="advanceOrder(' + o.num + ')">✓ Complete & Remove</button>';
+      if (isSMSSent) {
+        actionHTML += '<div class="sms-badge">✅ SMS sent — customer notified</div>';
+      } else {
+        actionHTML += '<button class="btn btn-sms" onclick="resendSMS(' + o.num + ')">📱 Resend SMS</button>';
+      }
+    }
+
+    const card = document.createElement('div');
+    card.className = 'order-card';
+    card.innerHTML =
+      '<div class="card-stripe"></div>' +
+      '<div class="card-body">' +
+        '<div class="card-top">' +
+          '<div class="order-num">' + o.id + '</div>' +
+          '<div class="order-time">' + o.timeStr + '</div>' +
+        '</div>' +
+        '<div class="order-customer">👤 ' + o.customer + ' · ' + (o.phone || '') + '</div>' +
+        '<div>' + o.items.map(i =>
+          '<div class="order-item">' +
+            '<div class="item-qty">' + i.qty + '</div>' +
+            '<div class="item-name">' + i.name + '</div>' +
+            '<div class="item-price">$' + (i.price * i.qty).toFixed(2) + '</div>' +
+          '</div>'
+        ).join('') + '</div>' +
+        '<div class="order-total">Total: $' + o.total.toFixed(2) + '</div>' +
+        '<div class="card-actions">' + actionHTML + '</div>' +
+      '</div>';
+    document.getElementById(colId).appendChild(card);
+  });
+
+  if (!orders.length) {
+    Object.values(cols).forEach(id => {
+      document.getElementById(id).innerHTML = '<div class="empty-state">🍽️<br>No orders yet</div>';
+    });
+  }
+
+  ['new','prep','ready'].forEach(s => {
+    const cap = s.charAt(0).toUpperCase() + s.slice(1);
+    document.getElementById('stat' + cap).textContent = counts[s] || 0;
+    document.getElementById('badge' + cap).textContent = counts[s] || 0;
+  });
+}
+
+async function loadCustomers() {
+  try {
+    const res = await fetch('/api/customers');
+    customers = await res.json();
+    renderCustomers();
+  } catch(e) { document.getElementById('customersGrid').innerHTML = '<p style="color:var(--muted)">Could not load customers.</p>'; }
+}
+
+function renderCustomers() {
+  const q = (document.getElementById('custSearch').value || '').toLowerCase();
+  const filtered = customers.filter(c => (c.name||'').toLowerCase().includes(q) || (c.phone||'').includes(q));
+  const grid = document.getElementById('customersGrid');
+  if (!filtered.length) { grid.innerHTML = '<p style="color:var(--muted);padding:20px">No customers found.</p>'; return; }
+  grid.innerHTML = filtered.map(c => `
+    <div class="customer-card">
+      <div class="cc-top">
+        <div class="cc-avatar">${(c.name||'?').charAt(0).toUpperCase()}</div>
+        <div><div class="cc-name">${c.name||'Unknown'}</div><div class="cc-phone">${c.phone||''}</div></div>
+      </div>
+      <div class="cc-stats">
+        <div class="cc-stat"><div class="cc-stat-n">${c.orders||0}</div><div class="cc-stat-l">Orders</div></div>
+        <div class="cc-stat"><div class="cc-stat-n">$${(c.spent||0).toFixed(0)}</div><div class="cc-stat-l">Spent</div></div>
+      </div>
+    </div>
+  `).join('');
+}
+
+function playBell() {
+  try {
+    const ctx = new AudioContext();
+    [0, 0.18, 0.36].forEach(t => {
+      const o = ctx.createOscillator(), g = ctx.createGain();
+      o.connect(g); g.connect(ctx.destination);
+      o.frequency.value = 880;
+      g.gain.setValueAtTime(0.25, ctx.currentTime + t);
+      g.gain.exponentialRampToValueAtTime(0.01, ctx.currentTime + t + 0.5);
+      o.start(ctx.currentTime + t); o.stop(ctx.currentTime + t + 0.5);
+    });
+  } catch(e) {}
+}
+
+function showToast(msg, type) {
+  const t = document.getElementById('toast');
+  t.textContent = msg;
+  t.className = 'toast show' + (type ? ' ' + type : '');
+  setTimeout(() => t.className = 'toast', 3500);
+}
+
+connectWS();
+</script>
 </body>
 </html>
