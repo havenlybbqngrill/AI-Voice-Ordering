@@ -1,16 +1,17 @@
 require('dotenv').config();
-const express = require('express');
+const express    = require('express');
 const bodyParser = require('body-parser');
-const cors = require('cors');
-const http = require('http');
-const WebSocket = require('ws');
-const twilio = require('twilio');
-const Anthropic = require('@anthropic-ai/sdk').default || require('@anthropic-ai/sdk');
+const cors       = require('cors');
+const http       = require('http');
+const WebSocket  = require('ws');
+const twilio     = require('twilio');
+const Anthropic  = require('@anthropic-ai/sdk').default || require('@anthropic-ai/sdk');
+const { Pool }   = require('pg');
 
-const app = express();
+const app    = express();
 const server = http.createServer(app);
 
-// Two WebSocket servers: voice calls (/conversation) and KDS dashboard (/kds)
+// Two WebSocket servers: voice (/conversation) and KDS (/kds)
 const wssVoice = new WebSocket.Server({ noServer: true });
 const wssKDS   = new WebSocket.Server({ noServer: true });
 
@@ -30,46 +31,151 @@ app.use(bodyParser.urlencoded({ extended: false }));
 app.use(bodyParser.json());
 app.use(express.static('public'));
 
-const anthropic = new Anthropic({ apiKey: process.env.ANTHROPIC_API_KEY });
+const anthropic    = new Anthropic({ apiKey: process.env.ANTHROPIC_API_KEY });
 const twilioClient = twilio(process.env.TWILIO_ACCOUNT_SID, process.env.TWILIO_AUTH_TOKEN);
 
-// ==================== IN-MEMORY STORE ====================
-const orders = [];
-const callSessions = {};
-// customers keyed by phone number for quick lookup
-const customersByPhone = {};
+// ==================== POSTGRESQL ====================
+const pool = new Pool({
+  connectionString: process.env.DATABASE_URL,
+  ssl: process.env.DATABASE_URL ? { rejectUnauthorized: false } : false
+});
+
+async function initDB() {
+  await pool.query(`
+    CREATE TABLE IF NOT EXISTS customers (
+      id          SERIAL PRIMARY KEY,
+      name        TEXT NOT NULL,
+      phone       TEXT UNIQUE NOT NULL,
+      created_at  TIMESTAMPTZ DEFAULT NOW()
+    );
+
+    CREATE TABLE IF NOT EXISTS orders (
+      id          SERIAL PRIMARY KEY,
+      order_ref   TEXT NOT NULL,
+      customer_id INTEGER REFERENCES customers(id),
+      customer_name TEXT,
+      phone       TEXT,
+      subtotal    NUMERIC(10,2),
+      tax         NUMERIC(10,2),
+      total       NUMERIC(10,2),
+      status      TEXT DEFAULT 'new',
+      created_at  TIMESTAMPTZ DEFAULT NOW()
+    );
+
+    CREATE TABLE IF NOT EXISTS order_items (
+      id          SERIAL PRIMARY KEY,
+      order_id    INTEGER REFERENCES orders(id) ON DELETE CASCADE,
+      item_id     INTEGER,
+      item_name   TEXT,
+      qty         INTEGER,
+      unit_price  NUMERIC(10,2),
+      line_total  NUMERIC(10,2)
+    );
+  `);
+  console.log('✅ Database tables ready');
+}
+
+// ---- DB helpers ----
+async function dbFindCustomer(phone) {
+  const clean = phone.replace(/\D/g, '');
+  const { rows } = await pool.query(
+    'SELECT * FROM customers WHERE regexp_replace(phone, \'\\D\', \'\', \'g\') = $1 LIMIT 1',
+    [clean]
+  );
+  return rows[0] || null;
+}
+
+async function dbUpsertCustomer(name, phone) {
+  const { rows } = await pool.query(
+    `INSERT INTO customers (name, phone)
+     VALUES ($1, $2)
+     ON CONFLICT (phone) DO UPDATE SET name = EXCLUDED.name
+     RETURNING *`,
+    [name, phone]
+  );
+  return rows[0];
+}
+
+async function dbSaveOrder(order, customerId) {
+  const { rows } = await pool.query(
+    `INSERT INTO orders (order_ref, customer_id, customer_name, phone, subtotal, tax, total, status, created_at)
+     VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9) RETURNING id`,
+    [order.id, customerId || null, order.customer, order.phone,
+     order.subtotal, order.tax, order.total, order.status, order.time]
+  );
+  const dbId = rows[0].id;
+  for (const item of order.items) {
+    await pool.query(
+      `INSERT INTO order_items (order_id, item_id, item_name, qty, unit_price, line_total)
+       VALUES ($1,$2,$3,$4,$5,$6)`,
+      [dbId, item.id, item.name, item.qty, item.price, item.price * item.qty]
+    );
+  }
+  return dbId;
+}
+
+async function dbUpdateOrderStatus(orderRef, status) {
+  await pool.query('UPDATE orders SET status=$1 WHERE order_ref=$2', [status, orderRef]);
+}
+
+// Get last N unique items a customer ordered (for favourites)
+async function dbGetFavourites(customerId, limit = 5) {
+  const { rows } = await pool.query(
+    `SELECT oi.item_name, oi.unit_price, SUM(oi.qty) as total_qty
+     FROM order_items oi
+     JOIN orders o ON o.id = oi.order_id
+     WHERE o.customer_id = $1
+     GROUP BY oi.item_name, oi.unit_price
+     ORDER BY total_qty DESC
+     LIMIT $2`,
+    [customerId, limit]
+  );
+  return rows;
+}
+
+async function dbGetCustomerStats(customerId) {
+  const { rows } = await pool.query(
+    `SELECT COUNT(*) as order_count, COALESCE(SUM(total),0) as total_spent
+     FROM orders WHERE customer_id=$1`,
+    [customerId]
+  );
+  return rows[0];
+}
+
+// ==================== IN-MEMORY (live orders for KDS) ====================
+const liveOrders   = [];   // orders currently on kitchen board
+const callSessions = {};   // active phone calls
 
 // ==================== MENU ====================
 const MENU = {
   Breakfast: [
-    { id: 1,  name: 'Bacon, Egg and Cheese',        price: 4.99  },
-    { id: 2,  name: 'Pastrami Egg and Cheese',       price: 8.99  },
-    { id: 3,  name: 'Turkey Sausage Egg and Cheese', price: 6.49  },
-    { id: 4,  name: 'Steak Egg and Cheese',          price: 8.99  },
-    { id: 5,  name: 'Chorizo Egg and Cheese',        price: 6.99  },
-    { id: 6,  name: 'Ham Egg and Cheese',            price: 4.99  },
-    { id: 7,  name: 'BLT',                           price: 4.99  },
-    { id: 8,  name: 'Beef Sausage Egg and Cheese',   price: 6.49  },
-    { id: 9,  name: 'Beef Bacon Egg and Cheese',     price: 6.99  },
-    { id: 10, name: 'Egg and Cheese',                price: 3.99  },
-    { id: 11, name: 'Turkey Bacon Egg and Cheese',   price: 6.49  },
-    { id: 12, name: 'Grilled Cheese',                price: 3.99  },
-    { id: 13, name: 'Sausage Egg and Cheese',        price: 4.99  },
-    { id: 14, name: 'Taylor Ham Egg and Cheese',     price: 4.99  },
-    { id: 15, name: 'Kimchi Egg and Cheese',         price: 5.99  },
+    { id: 1,  name: 'Bacon, Egg and Cheese',         price: 4.99 },
+    { id: 2,  name: 'Pastrami Egg and Cheese',        price: 8.99 },
+    { id: 3,  name: 'Turkey Sausage Egg and Cheese',  price: 6.49 },
+    { id: 4,  name: 'Steak Egg and Cheese',           price: 8.99 },
+    { id: 5,  name: 'Chorizo Egg and Cheese',         price: 6.99 },
+    { id: 6,  name: 'Ham Egg and Cheese',             price: 4.99 },
+    { id: 7,  name: 'BLT',                            price: 4.99 },
+    { id: 8,  name: 'Beef Sausage Egg and Cheese',    price: 6.49 },
+    { id: 9,  name: 'Beef Bacon Egg and Cheese',      price: 6.99 },
+    { id: 10, name: 'Egg and Cheese',                 price: 3.99 },
+    { id: 11, name: 'Turkey Bacon Egg and Cheese',    price: 6.49 },
+    { id: 12, name: 'Grilled Cheese',                 price: 3.99 },
+    { id: 13, name: 'Sausage Egg and Cheese',         price: 4.99 },
+    { id: 14, name: 'Taylor Ham Egg and Cheese',      price: 4.99 },
+    { id: 15, name: 'Kimchi Egg and Cheese',          price: 5.99 },
   ],
   'NY Platters': [
-    { id: 20, name: 'NY Steak Platter',              price: 10.99 },
-    { id: 21, name: 'NY Chicken and Steak Platter',  price: 12.99 },
-    { id: 22, name: 'NY Shrimp Platter',             price: 11.99 },
-    { id: 23, name: 'NY Chicken and Shrimp Platter', price: 11.99 },
-    { id: 24, name: 'Grilled Tilapia Platter',       price: 13.99 },
-    { id: 25, name: 'Grilled Salmon Platter',        price: 13.99 },
-    { id: 26, name: 'NY Falafel Platter',            price: 8.99  },
-    { id: 27, name: 'NY Chicken Platter',            price: 8.99  },
+    { id: 20, name: 'NY Steak Platter',               price: 10.99 },
+    { id: 21, name: 'NY Chicken and Steak Platter',   price: 12.99 },
+    { id: 22, name: 'NY Shrimp Platter',              price: 11.99 },
+    { id: 23, name: 'NY Chicken and Shrimp Platter',  price: 11.99 },
+    { id: 24, name: 'Grilled Tilapia Platter',        price: 13.99 },
+    { id: 25, name: 'Grilled Salmon Platter',         price: 13.99 },
+    { id: 26, name: 'NY Falafel Platter',             price: 8.99  },
+    { id: 27, name: 'NY Chicken Platter',             price: 8.99  },
   ]
 };
-
 const ALL_ITEMS = Object.values(MENU).flat();
 
 function getMenuText() {
@@ -78,20 +184,19 @@ function getMenuText() {
 
 // ==================== KDS BROADCAST + SMS ====================
 function broadcastKDS(data) {
-  wssKDS.clients.forEach(client => {
-    if (client.readyState === WebSocket.OPEN) client.send(JSON.stringify(data));
+  wssKDS.clients.forEach(c => {
+    if (c.readyState === WebSocket.OPEN) c.send(JSON.stringify(data));
   });
 }
 
 async function sendSMSToCustomer(order) {
   try {
-    const msg = `Hi ${order.customer}! Your order ${order.id} from Outwater Grill is READY for pickup! 🍔 See you soon!`;
     await twilioClient.messages.create({
-      body: msg,
+      body: `Hi ${order.customer}! Your order ${order.id} from Outwater Grill is READY for pickup! 🍔 See you soon!`,
       from: process.env.TWILIO_PHONE_NUMBER,
       to: order.phone
     });
-    console.log(`📱 SMS sent to ${order.phone} for order ${order.id}`);
+    console.log(`📱 SMS sent to ${order.phone}`);
     return true;
   } catch (err) {
     console.error('SMS error:', err.message);
@@ -101,36 +206,34 @@ async function sendSMSToCustomer(order) {
 
 // ==================== KDS WEBSOCKET ====================
 wssKDS.on('connection', ws => {
-  console.log('📺 KDS client connected');
-  ws.send(JSON.stringify({ type: 'init', orders }));
+  console.log('📺 KDS connected');
+  ws.send(JSON.stringify({ type: 'init', orders: liveOrders }));
 
-  ws.on('message', async msg => {
-    let data;
-    try { data = JSON.parse(msg); } catch { return; }
+  ws.on('message', async raw => {
+    let data; try { data = JSON.parse(raw); } catch { return; }
 
     if (data.type === 'advance_order') {
-      const order = orders.find(o => o.num === data.num);
-      if (order) {
-        const flow = { new: 'prep', prep: 'ready', ready: 'done' };
-        const next = flow[order.status];
-        if (next === 'done') {
-          orders.splice(orders.indexOf(order), 1);
-          broadcastKDS({ type: 'order_removed', num: data.num });
-        } else {
-          order.status = next;
-          broadcastKDS({ type: 'order_updated', order });
-          // Auto-SMS when order moves to ready
-          if (next === 'ready') {
-            const sent = await sendSMSToCustomer(order);
-            if (sent) broadcastKDS({ type: 'sms_sent', num: order.num, customer: order.customer });
-          }
+      const order = liveOrders.find(o => o.num === data.num);
+      if (!order) return;
+      const flow = { new: 'prep', prep: 'ready', ready: 'done' };
+      const next = flow[order.status];
+      if (next === 'done') {
+        liveOrders.splice(liveOrders.indexOf(order), 1);
+        broadcastKDS({ type: 'order_removed', num: data.num });
+        await dbUpdateOrderStatus(order.id, 'completed');
+      } else {
+        order.status = next;
+        broadcastKDS({ type: 'order_updated', order });
+        await dbUpdateOrderStatus(order.id, next);
+        if (next === 'ready') {
+          const sent = await sendSMSToCustomer(order);
+          if (sent) broadcastKDS({ type: 'sms_sent', num: order.num, customer: order.customer });
         }
       }
     }
 
-    // Manual SMS resend from dashboard
     if (data.type === 'send_sms') {
-      const order = orders.find(o => o.num === data.num);
+      const order = liveOrders.find(o => o.num === data.num);
       if (order) {
         const sent = await sendSMSToCustomer(order);
         broadcastKDS({ type: 'sms_sent', num: order.num, customer: order.customer, success: sent });
@@ -140,39 +243,40 @@ wssKDS.on('connection', ws => {
 });
 
 // ==================== ORDER PLACEMENT ====================
-function placeOrder(session) {
+async function placeOrder(session) {
   if (!session.cart.length) return null;
-  const subtotal = session.cart.reduce((s, i) => s + i.price * i.qty, 0);
-  const tax = subtotal * 0.08;
-  const total = subtotal + tax;
-  const orderNum = Math.floor(Math.random() * 9000) + 1000;
+
+  const subtotal  = session.cart.reduce((s, i) => s + i.price * i.qty, 0);
+  const tax       = subtotal * 0.08;
+  const total     = subtotal + tax;
+  const orderNum  = Math.floor(Math.random() * 9000) + 1000;
 
   const order = {
-    id: '#' + orderNum,
-    num: orderNum,
+    id:       '#' + orderNum,
+    num:      orderNum,
     customer: session.customerName || 'Phone Customer',
-    phone: session.callerPhone,
-    items: [...session.cart],
-    subtotal,
-    tax,
-    total,
-    status: 'new',
-    time: new Date(),
-    timeStr: new Date().toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })
+    phone:    session.callerPhone,
+    items:    [...session.cart],
+    subtotal, tax, total,
+    status:   'new',
+    time:     new Date(),
+    timeStr:  new Date().toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })
   };
 
-  orders.push(order);
+  liveOrders.push(order);
   broadcastKDS({ type: 'new_order', order });
-  console.log(`✅ Order placed: ${order.id} for ${order.customer} — $${order.total.toFixed(2)}`);
 
-  // Save customer
-  if (session.callerPhone) {
-    customersByPhone[session.callerPhone] = {
-      name: session.customerName,
-      phone: session.callerPhone,
-      orders: (customersByPhone[session.callerPhone]?.orders || 0) + 1,
-      spent: ((customersByPhone[session.callerPhone]?.spent || 0) + subtotal)
-    };
+  // Persist to DB
+  try {
+    let customerId = session.dbCustomerId || null;
+    if (!customerId && session.callerPhone) {
+      const cust = await dbUpsertCustomer(session.customerName || 'Phone Customer', session.callerPhone);
+      customerId = cust.id;
+    }
+    await dbSaveOrder(order, customerId);
+    console.log(`✅ Order ${order.id} saved to DB for customer ${order.customer}`);
+  } catch (err) {
+    console.error('DB save error:', err.message);
   }
 
   return order;
@@ -180,40 +284,28 @@ function placeOrder(session) {
 
 // ==================== CART LOGIC ====================
 function updateCartFromAI(session, userSpeech, aiText) {
-  const combinedText = (userSpeech + ' ' + aiText).toLowerCase();
-
-  // Only add items when AI clearly confirms ("added", "got it", "sure")
-  const isConfirming = /\b(added|got it|sure|adding|one .* coming|i added)\b/i.test(aiText);
+  const isConfirming = /\b(added|got it|adding|sure|one .* coming|i added)\b/i.test(aiText);
   if (!isConfirming) return;
 
-  // Find best (longest/most specific) match
-  let bestMatch = null;
-  let bestScore = 0;
+  let bestMatch = null, bestScore = 0;
 
   ALL_ITEMS.forEach(item => {
     const nameLower = item.name.toLowerCase();
-    // Check if the AI response contains this item name
-    if (!aiText.toLowerCase().includes(nameLower.split(' ')[0])) return;
+    const combined  = (userSpeech + ' ' + aiText).toLowerCase();
+    const words     = nameLower.split(' ').filter(w => w.length > 2);
+    const score     = words.filter(w => combined.includes(w)).length;
 
-    // Score by how many words of the item name appear in speech+AI text
-    const words = nameLower.split(' ').filter(w => w.length > 2);
-    const score = words.filter(w => combinedText.includes(w)).length;
-    const specificity = item.name.length; // prefer longer/more specific names
-
-    if (score >= 2 && (score > bestScore || (score === bestScore && specificity > (bestMatch?.name.length || 0)))) {
-      bestScore = score;
-      bestMatch = item;
+    if (score >= 2 && (score > bestScore || (score === bestScore && item.name.length > (bestMatch?.name.length || 0)))) {
+      bestScore  = score;
+      bestMatch  = item;
     }
   });
 
   if (bestMatch) {
     const existing = session.cart.find(c => c.id === bestMatch.id);
-    if (existing) {
-      existing.qty += 1;
-    } else {
-      session.cart.push({ ...bestMatch, qty: 1, note: '' });
-    }
-    console.log(`🛒 Added to cart: ${bestMatch.name}`);
+    if (existing) existing.qty += 1;
+    else session.cart.push({ ...bestMatch, qty: 1, note: '' });
+    console.log(`🛒 Cart: ${bestMatch.name}`);
   }
 }
 
@@ -223,41 +315,42 @@ async function getAIResponse(session, userSpeech) {
     ? session.cart.map(i => `${i.qty}x ${i.name} ($${(i.price * i.qty).toFixed(2)})`).join(', ')
     : 'empty';
 
+  // Build favourite intro for returning customers
+  let returningContext = '';
+  if (session.favourites && session.favourites.length > 0) {
+    const favList = session.favourites.map((f, i) => `${i + 1}. ${f.item_name} $${parseFloat(f.unit_price).toFixed(2)}`).join(', ');
+    returningContext = `This is a RETURNING customer. Their top favourites are: ${favList}. You already greeted them with their name and listed their favourites. They are now ordering.`;
+  }
+
   const systemPrompt = `You are the AI phone ordering assistant for Outwater Grill restaurant in Garfield, NJ.
 Keep responses SHORT — 1-2 sentences only. You are speaking out loud on a phone call.
 Customer name: ${session.customerName || 'unknown'}
 Current cart: ${cartText}
+${returningContext}
 
 FULL MENU:
 ${getMenuText()}
 
 RULES:
 - Match what the customer says to the closest menu item. Make your best guess.
-- "bacon and cheese" or "bacon egg cheese" = Bacon, Egg and Cheese
+- "bacon and cheese" = Bacon, Egg and Cheese
 - "taylor ham" or "pork roll" = Taylor Ham Egg and Cheese
 - "steak" alone = NY Steak Platter
 - "chicken" alone = NY Chicken Platter
 - "sausage" alone = Sausage Egg and Cheese
 - When adding an item say EXACTLY: "Got it, added [EXACT ITEM NAME]. Anything else?"
-- When customer says done/that's it/checkout/confirm, say their order back and end with [ORDER_COMPLETE]
-- Tax is 8%, mention total with tax when confirming order
+- When customer says done/that's it/checkout/confirm: summarize order with total including 8% tax, then end with [ORDER_COMPLETE]
 - If cart is empty at checkout, ask what they want
 - Never make up items not on the menu`;
 
-  const messages = [
-    ...session.history,
-    { role: 'user', content: userSpeech }
-  ];
-
   const response = await anthropic.messages.create({
-    model: 'claude-haiku-4-5-20251001',
+    model:      'claude-haiku-4-5-20251001',
     max_tokens: 200,
-    system: systemPrompt,
-    messages
+    system:     systemPrompt,
+    messages:   [...session.history, { role: 'user', content: userSpeech }]
   });
 
   const aiText = response.content[0].text;
-
   session.history.push({ role: 'user', content: userSpeech });
   session.history.push({ role: 'assistant', content: aiText });
   if (session.history.length > 16) session.history = session.history.slice(-16);
@@ -265,138 +358,223 @@ RULES:
   updateCartFromAI(session, userSpeech, aiText);
 
   const orderComplete = aiText.includes('[ORDER_COMPLETE]');
-  const cleanText = aiText.replace('[ORDER_COMPLETE]', '').trim();
-
-  return { text: cleanText, orderComplete };
+  return { text: aiText.replace('[ORDER_COMPLETE]', '').trim(), orderComplete };
 }
 
 // ==================== CONVERSATIONRELAY WEBSOCKET ====================
-wssVoice.on('connection', (ws, req) => {
+wssVoice.on('connection', async (ws, req) => {
   const urlParams = new URL(req.url, 'http://localhost');
-  const callSid = urlParams.searchParams.get('callSid') || 'unknown';
-  console.log(`📞 ConversationRelay connected: ${callSid}`);
+  const callSid   = urlParams.searchParams.get('callSid') || 'unknown';
+  console.log(`📞 Call connected: ${callSid}`);
 
-  callSessions[callSid] = {
-    callSid,
-    callerPhone: '',
-    customerName: null,
-    cart: [],
-    history: [],
-    step: 'get_name'
+  const session = {
+    callSid, callerPhone: '',
+    customerName: null, dbCustomerId: null,
+    favourites: [],
+    cart: [], history: [], step: 'get_name'
   };
-
-  const session = callSessions[callSid];
+  callSessions[callSid] = session;
 
   ws.on('message', async (rawData) => {
-    let event;
-    try { event = JSON.parse(rawData); } catch { return; }
-    console.log(`[${callSid}] Event: ${event.type}`, event.voicePrompt || '');
+    let event; try { event = JSON.parse(rawData); } catch { return; }
 
+    // ---- SETUP: caller phone arrives, look up in DB ----
     if (event.type === 'setup') {
       session.callerPhone = event.from || '';
-      const existing = customersByPhone[session.callerPhone];
-      if (existing) {
-        session.customerName = existing.name;
-        session.step = 'ordering';
+      console.log(`[${callSid}] Caller phone: ${session.callerPhone}`);
+
+      try {
+        const existing = await dbFindCustomer(session.callerPhone);
+        if (existing) {
+          session.customerName  = existing.name;
+          session.dbCustomerId  = existing.id;
+          session.step          = 'ordering';
+          session.favourites    = await dbGetFavourites(existing.id, 5);
+          const stats           = await dbGetCustomerStats(existing.id);
+
+          // Build welcome back message with favourites
+          let favText = '';
+          if (session.favourites.length > 0) {
+            favText = ' Your favourites are: ' +
+              session.favourites.map((f, i) => `${i + 1}. ${f.item_name}`).join(', ') + '.';
+          }
+          const orderWord = stats.order_count == 1 ? 'order' : 'orders';
+          const welcome = `Welcome back ${existing.name}! You have placed ${stats.order_count} ${orderWord} with us.${favText} Would you like to repeat one of your favourites or order something new?`;
+
+          ws.send(JSON.stringify({ type: 'text', token: welcome, last: true }));
+          console.log(`[${callSid}] Returning customer: ${existing.name}`);
+        }
+        // New customer — ConversationRelay already said the welcomeGreeting
+      } catch (err) {
+        console.error('DB lookup error:', err.message);
       }
       return;
     }
 
+    // ---- PROMPT: customer speaking ----
     if (event.type === 'prompt') {
       const userSpeech = (event.voicePrompt || '').trim();
       if (!userSpeech) return;
       console.log(`[${callSid}] Customer: "${userSpeech}"`);
 
-      // Collect name first
+      // New customer — collect name first
       if (session.step === 'get_name') {
-        session.customerName = userSpeech.replace(/^(my name is |i'm |i am )/i, '').trim();
+        // Extract just the name (strip "my name is", "I'm", etc.)
+        const name = userSpeech
+          .replace(/^(my name is |i'm |i am |it's |its )/i, '')
+          .trim()
+          .split(' ')
+          .slice(0, 2)        // first + last name max
+          .map(w => w.charAt(0).toUpperCase() + w.slice(1).toLowerCase())
+          .join(' ');
+
+        session.customerName = name;
         session.step = 'ordering';
+
+        // Save to DB immediately so we have them on record
+        try {
+          const cust = await dbUpsertCustomer(name, session.callerPhone);
+          session.dbCustomerId = cust.id;
+          console.log(`[${callSid}] New customer saved: ${name} ${session.callerPhone}`);
+        } catch (err) {
+          console.error('DB upsert error:', err.message);
+        }
+
         ws.send(JSON.stringify({
-          type: 'text',
-          token: `Nice to meet you, ${session.customerName}! What would you like to order today? We have breakfast sandwiches and NY Style Platters.`,
-          last: true
+          type:  'text',
+          token: `Great to meet you ${name}! Welcome to Outwater Grill. We have breakfast sandwiches and NY Style Platters. What can I get for you today?`,
+          last:  true
         }));
         return;
       }
 
-      // Process order with AI
+      // Returning customer picking a favourite by number
+      if (session.step === 'ordering' && session.favourites.length > 0) {
+        const numMatch = userSpeech.match(/\b([1-5]|one|two|three|four|five)\b/i);
+        const numMap   = { one:1, two:2, three:3, four:4, five:5 };
+        if (numMatch) {
+          const pick = parseInt(numMatch[1]) || numMap[numMatch[1].toLowerCase()];
+          const fav  = session.favourites[pick - 1];
+          if (fav) {
+            const menuItem = ALL_ITEMS.find(i => i.name === fav.item_name);
+            if (menuItem) {
+              session.cart.push({ ...menuItem, qty: 1, note: '' });
+              ws.send(JSON.stringify({
+                type:  'text',
+                token: `Got it, added ${menuItem.name}. Anything else or shall I confirm your order?`,
+                last:  true
+              }));
+              return;
+            }
+          }
+        }
+      }
+
+      // Normal AI ordering
       try {
         const { text, orderComplete } = await getAIResponse(session, userSpeech);
 
         if (orderComplete && session.cart.length > 0) {
-          const order = placeOrder(session);
-          const confirmText = `Perfect! Your order number is ${order.num}. You ordered ${order.items.map(i => `${i.qty} ${i.name}`).join(', ')}. Your total is $${order.total.toFixed(2)} including tax. We will text you when it is ready. Thank you for calling Outwater Grill!`;
-          ws.send(JSON.stringify({ type: 'text', token: confirmText, last: true }));
+          const order = await placeOrder(session);
+          const itemList = order.items.map(i => `${i.qty} ${i.name}`).join(', ');
+          ws.send(JSON.stringify({
+            type:  'text',
+            token: `Perfect! Your order number is ${order.num}. You ordered ${itemList}. Total is $${order.total.toFixed(2)} including tax. We will text you when it is ready. Thank you ${session.customerName || ''}, see you soon at Outwater Grill!`,
+            last:  true
+          }));
           delete callSessions[callSid];
         } else {
           ws.send(JSON.stringify({ type: 'text', token: text, last: true }));
         }
       } catch (err) {
         console.error('AI error:', err.message);
-        ws.send(JSON.stringify({ type: 'text', token: "I'm sorry, I had a little trouble. Could you repeat that?", last: true }));
+        ws.send(JSON.stringify({ type: 'text', token: "Sorry, I had a little trouble. Could you repeat that?", last: true }));
       }
     }
   });
 
-  ws.on('close', () => console.log(`[${callSid}] Disconnected`));
-  ws.on('error', err => console.error(`[${callSid}] WS Error:`, err.message));
+  ws.on('close', () => console.log(`[${callSid}] Call ended`));
+  ws.on('error', err => console.error(`[${callSid}] WS error:`, err.message));
 });
 
 // ==================== TWILIO VOICE ROUTE ====================
 app.post('/voice/incoming', (req, res) => {
   const callSid = req.body.CallSid || 'unknown';
-  const callerPhone = req.body.From || '';
-  const host = req.headers.host || 'outwater-grill-d64d7ae4fd7e.herokuapp.com';
+  const host    = req.headers.host || 'outwater-grill-d64d7ae4fd7e.herokuapp.com';
+  const wsUrl   = `wss://${host}/conversation?callSid=${callSid}`;
 
-  const existing = customersByPhone[callerPhone];
-  const welcomeGreeting = existing
-    ? `Welcome back to Outwater Grill, ${existing.name}! What can I get for you today?`
-    : `Thank you for calling Outwater Grill in Garfield! I am your AI ordering assistant. What is your name please?`;
-
-  const wsUrl = `wss://${host}/conversation?callSid=${callSid}`;
-
+  // welcomeGreeting only plays for NEW customers (returning customers get greeted via setup event)
   const twiml = `<?xml version="1.0" encoding="UTF-8"?>
 <Response>
   <Connect>
-    <ConversationRelay url="${wsUrl}" welcomeGreeting="${welcomeGreeting}" />
+    <ConversationRelay url="${wsUrl}" welcomeGreeting="Thank you for calling Outwater Grill in Garfield! I am your AI ordering assistant. May I have your name please?" />
   </Connect>
 </Response>`;
 
   res.type('text/xml');
   res.send(twiml);
-  console.log(`📞 Incoming call from ${callerPhone} — CallSid: ${callSid}`);
+  console.log(`📞 Incoming call — ${req.body.From} — ${callSid}`);
 });
 
 // ==================== REST API ====================
-app.get('/api/orders', (req, res) => res.json(orders));
-app.get('/api/customers', (req, res) => res.json(Object.values(customersByPhone)));
-
-app.post('/api/orders/:num/advance', async (req, res) => {
-  const order = orders.find(o => o.num === parseInt(req.params.num));
-  if (!order) return res.status(404).json({ error: 'Not found' });
-  const flow = { new: 'prep', prep: 'ready', ready: 'done' };
-  const next = flow[order.status];
-  if (next === 'done') {
-    orders.splice(orders.indexOf(order), 1);
-    broadcastKDS({ type: 'order_removed', num: order.num });
-    return res.json({ removed: true });
-  }
-  order.status = next;
-  broadcastKDS({ type: 'order_updated', order });
-  if (next === 'ready') {
-    const sent = await sendSMSToCustomer(order);
-    if (sent) broadcastKDS({ type: 'sms_sent', num: order.num, customer: order.customer });
-  }
-  res.json(order);
+app.get('/api/orders', async (req, res) => {
+  try {
+    const { rows } = await pool.query(
+      `SELECT o.*, json_agg(json_build_object(
+        'item_name', oi.item_name, 'qty', oi.qty,
+        'unit_price', oi.unit_price, 'line_total', oi.line_total
+       ) ORDER BY oi.id) as items
+       FROM orders o
+       LEFT JOIN order_items oi ON oi.order_id = o.id
+       GROUP BY o.id
+       ORDER BY o.created_at DESC
+       LIMIT 100`
+    );
+    res.json(rows);
+  } catch (err) { res.status(500).json({ error: err.message }); }
 });
 
-// Health check
-app.get('/health', (req, res) => res.json({ status: 'ok', orders: orders.length }));
+app.get('/api/customers', async (req, res) => {
+  try {
+    const { rows } = await pool.query(
+      `SELECT c.*,
+        COUNT(o.id)            as order_count,
+        COALESCE(SUM(o.total),0) as total_spent,
+        MAX(o.created_at)      as last_order_at
+       FROM customers c
+       LEFT JOIN orders o ON o.customer_id = c.id
+       GROUP BY c.id
+       ORDER BY last_order_at DESC NULLS LAST`
+    );
+    res.json(rows);
+  } catch (err) { res.status(500).json({ error: err.message }); }
+});
+
+app.get('/api/customers/:id/favourites', async (req, res) => {
+  try {
+    const favs = await dbGetFavourites(req.params.id, 10);
+    res.json(favs);
+  } catch (err) { res.status(500).json({ error: err.message }); }
+});
+
+// Live orders (KDS)
+app.get('/api/live-orders', (req, res) => res.json(liveOrders));
+
+app.get('/health', (req, res) => res.json({ status: 'ok', liveOrders: liveOrders.length }));
 
 // ==================== START ====================
 const PORT = process.env.PORT || 3000;
-server.listen(PORT, () => {
-  console.log(`🍔 Outwater Grill running on port ${PORT}`);
-  console.log(`📞 Voice webhook: POST /voice/incoming`);
-  console.log(`📺 KDS dashboard: http://localhost:${PORT}`);
-});
+
+initDB()
+  .then(() => {
+    server.listen(PORT, () => {
+      console.log(`🍔 Outwater Grill running on port ${PORT}`);
+      console.log(`📞 Voice webhook: POST /voice/incoming`);
+      console.log(`📺 KDS: http://localhost:${PORT}`);
+    });
+  })
+  .catch(err => {
+    console.error('Failed to init DB:', err.message);
+    // Start anyway — system still works without DB
+    server.listen(PORT, () => console.log(`🍔 Running on port ${PORT} (no DB)`));
+  });
