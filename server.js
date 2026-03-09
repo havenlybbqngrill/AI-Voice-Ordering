@@ -248,9 +248,14 @@ function extractName(speech) {
 
 // ==================== KDS BROADCAST + SMS ====================
 function broadcastKDS(data) {
+  let sent = 0;
   wssKDS.clients.forEach(c => {
-    if (c.readyState === WebSocket.OPEN) c.send(JSON.stringify(data));
+    if (c.readyState === WebSocket.OPEN) {
+      c.send(JSON.stringify(data));
+      sent++;
+    }
   });
+  console.log(`📺 broadcastKDS type=${data.type} → ${sent} client(s)`);
 }
 
 async function sendSMSToCustomer(order) {
@@ -269,8 +274,47 @@ async function sendSMSToCustomer(order) {
 }
 
 // ==================== KDS WEBSOCKET ====================
-wssKDS.on('connection', ws => {
+wssKDS.on('connection', async ws => {
   console.log('📺 KDS connected');
+
+  // If liveOrders is empty (e.g. after a restart), try to reload active orders from DB
+  if (liveOrders.length === 0) {
+    try {
+      const { rows } = await pool.query(
+        `SELECT o.*, json_agg(json_build_object(
+           'id', oi.item_id, 'name', oi.item_name,
+           'qty', oi.qty, 'price', oi.unit_price
+         ) ORDER BY oi.id) as items
+         FROM orders o
+         LEFT JOIN order_items oi ON oi.order_id = o.id
+         WHERE o.status IN ('new','prep','ready')
+           AND o.created_at >= NOW() - INTERVAL '4 hours'
+         GROUP BY o.id
+         ORDER BY o.created_at ASC`
+      );
+      rows.forEach(r => {
+        if (!liveOrders.find(o => o.id === r.order_ref)) {
+          liveOrders.push({
+            id:      r.order_ref,
+            num:     parseInt(r.order_ref.replace('#','')),
+            customer: r.customer_name,
+            phone:   r.phone,
+            items:   r.items || [],
+            subtotal: parseFloat(r.subtotal),
+            tax:     parseFloat(r.tax),
+            total:   parseFloat(r.total),
+            status:  r.status,
+            time:    r.created_at,
+            timeStr: new Date(r.created_at).toLocaleTimeString([], { hour:'2-digit', minute:'2-digit' })
+          });
+        }
+      });
+      if (rows.length) console.log(`📺 Restored ${rows.length} active order(s) from DB`);
+    } catch (err) {
+      console.error('KDS restore error:', err.message);
+    }
+  }
+
   ws.send(JSON.stringify({ type: 'init', orders: liveOrders }));
 
   ws.on('message', async raw => {
@@ -565,11 +609,15 @@ wssVoice.on('connection', async (ws, req) => {
       }
 
       // Cancel / clear cart
-      if (/^(cancel|never mind|forget it|start over|clear( my)? (cart|order))$/i.test(userSpeech.trim())) {
+      const cleanSpeech = userSpeech.replace(/[.,!?]+$/, '').trim();
+      if (/\b(cancel|never mind|forget it|start over|clear my (cart|order))\b/i.test(cleanSpeech) ||
+          /^(cancel|stop|nope|no thanks)$/i.test(cleanSpeech)) {
         session.cart = [];
         ws.send(JSON.stringify({
           type: 'text',
-          token: 'No problem, I cleared your order. What would you like instead?',
+          token: session.cart.length === 0
+            ? 'No problem! What would you like to order?'
+            : 'No problem, I cleared your order. What would you like instead?',
           last: true
         }));
         return;
