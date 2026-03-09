@@ -69,8 +69,11 @@ async function initDB() {
       item_name   TEXT,
       qty         INTEGER,
       unit_price  NUMERIC(10,2),
-      line_total  NUMERIC(10,2)
+      line_total  NUMERIC(10,2),
+      modifiers   TEXT DEFAULT ''
     );
+    -- Add modifiers column if upgrading existing DB
+    ALTER TABLE order_items ADD COLUMN IF NOT EXISTS modifiers TEXT DEFAULT '';
 
     CREATE TABLE IF NOT EXISTS conversation_logs (
       id            SERIAL PRIMARY KEY,
@@ -124,9 +127,9 @@ async function dbSaveOrder(order, customerId) {
   const dbId = rows[0].id;
   for (const item of order.items) {
     await pool.query(
-      `INSERT INTO order_items (order_id, item_id, item_name, qty, unit_price, line_total)
-       VALUES ($1,$2,$3,$4,$5,$6)`,
-      [dbId, item.id, item.name, item.qty, item.price, item.price * item.qty]
+      `INSERT INTO order_items (order_id, item_id, item_name, qty, unit_price, line_total, modifiers)
+       VALUES ($1,$2,$3,$4,$5,$6,$7)`,
+      [dbId, item.id, item.name, item.qty, item.price, item.price * item.qty, item.note || '']
     );
   }
   return dbId;
@@ -283,7 +286,7 @@ wssKDS.on('connection', async ws => {
       const { rows } = await pool.query(
         `SELECT o.*, json_agg(json_build_object(
            'id', oi.item_id, 'name', oi.item_name,
-           'qty', oi.qty, 'price', oi.unit_price
+           'qty', oi.qty, 'price', oi.unit_price, 'note', oi.modifiers
          ) ORDER BY oi.id) as items
          FROM orders o
          LEFT JOIN order_items oi ON oi.order_id = o.id
@@ -421,11 +424,26 @@ function updateCartFromAI(session, userSpeech, aiText) {
     });
   }
 
+  // Extract modifiers from [MODIFIERS: ...] tag in AI response
+  let note = '';
+  const modMatch = aiText.match(/\[MODIFIERS:\s*([^\]]+)\]/i);
+  if (modMatch) {
+    note = modMatch[1].trim();
+    console.log(`📝 Modifiers: ${note}`);
+  }
+
   if (matched) {
     const existing = session.cart.find(c => c.id === matched.id);
-    if (existing) existing.qty += 1;
-    else session.cart.push({ ...matched, qty: 1, note: '' });
-    console.log(`🛒 Cart: ${matched.name}`);
+    if (existing) {
+      existing.qty += 1;
+      // Append new modifiers if different
+      if (note && !existing.note.includes(note)) {
+        existing.note = [existing.note, note].filter(Boolean).join(', ');
+      }
+    } else {
+      session.cart.push({ ...matched, qty: 1, note });
+    }
+    console.log(`🛒 Cart: ${matched.name}${note ? ' (' + note + ')' : ''}`);
   } else {
     console.log(`⚠️  Cart: no item matched in AI text: "${aiText.slice(0, 80)}"`);
   }
@@ -434,7 +452,7 @@ function updateCartFromAI(session, userSpeech, aiText) {
 // ==================== AI RESPONSE ====================
 async function getAIResponse(session, userSpeech) {
   const cartText = session.cart.length
-    ? session.cart.map(i => `${i.qty}x ${i.name} ($${(i.price * i.qty).toFixed(2)})`).join(', ')
+    ? session.cart.map(i => `${i.qty}x ${i.name}${i.note ? ' [' + i.note + ']' : ''} ($${(i.price * i.qty).toFixed(2)})`).join(', ')
     : 'empty';
 
   // Build favourite intro for returning customers
@@ -467,7 +485,17 @@ RULES:
   * "egg and cheese" alone = "Egg and Cheese"
 - When adding an item ALWAYS say EXACTLY: "Got it, added [FULL EXACT ITEM NAME FROM MENU]. Anything else?"
   The exact item name must appear word-for-word as it appears in the menu list above.
-- When customer says done/that's it/checkout/confirm: read back the order with total including 8% tax, then end with [ORDER_COMPLETE]
+- MODIFIERS: If the customer mentions any customizations (no mayo, extra salt, well done, no onions, extra hot sauce, etc.)
+  append a modifiers tag on the SAME line, like:
+  "Got it, added Bacon, Egg and Cheese. [MODIFIERS: no mayo, extra salt] Anything else?"
+  Common modifiers to listen for:
+  * No/without/hold the: mayo, salt, pepper, onions, ketchup, hot sauce, cheese, bread/roll, lettuce, tomato
+  * Extra/add: salt, pepper, hot sauce, ketchup, mayo, cheese, onions, lettuce, tomato
+  * Preparation: well done, light, crispy, toasted, untoasted, wrap instead of bread
+  * Side: with rice, with fries, white rice, brown rice, no rice, extra rice
+  * Spice level: mild, medium, hot, extra hot, no spice
+  If no modifiers mentioned, do NOT include the [MODIFIERS:] tag.
+- When customer says done/that is it/checkout/confirm: read back the order WITH all modifiers, total including 8% tax, then end with [ORDER_COMPLETE]
 - If cart is empty at checkout, ask what they want
 - Never make up items not on the menu`;
 
@@ -757,7 +785,8 @@ app.get('/api/orders/completed/today', async (req, res) => {
           'item_name', oi.item_name,
           'qty',       oi.qty,
           'unit_price',oi.unit_price,
-          'line_total', oi.line_total
+          'line_total', oi.line_total,
+          'modifiers', oi.modifiers
         ) ORDER BY oi.id) as items
        FROM orders o
        LEFT JOIN order_items oi ON oi.order_id = o.id
@@ -783,7 +812,8 @@ app.get('/api/orders/completed', async (req, res) => {
           'item_name', oi.item_name,
           'qty',       oi.qty,
           'unit_price',oi.unit_price,
-          'line_total', oi.line_total
+          'line_total', oi.line_total,
+          'modifiers', oi.modifiers
         ) ORDER BY oi.id) as items
        FROM orders o
        LEFT JOIN order_items oi ON oi.order_id = o.id
