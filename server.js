@@ -178,14 +178,18 @@ Rules:
   session.history.push({ role: 'assistant', content: text });
   if (session.history.length > 12) session.history = session.history.slice(-12);
 
-  MENU.forEach(item => {
-    const words = item.name.toLowerCase().split(' ').filter(w => w.length > 3);
-    const combined = (speech + ' ' + text).toLowerCase();
-    const matched = words.filter(w => combined.includes(w)).length;
-    if (matched >= 2 || combined.includes(item.name.toLowerCase())) {
-      if (/added|got it|adding|sure/.test(text.toLowerCase())) {
+  // Only add item if AI explicitly confirms the exact item name
+  const aiLower = text.toLowerCase();
+  if (/added|got it|adding|i have/.test(aiLower)) {
+    MENU.forEach(item => {
+      if (aiLower.includes(item.name.toLowerCase())) {
         if (!session.cart.find(c => c.id === item.id)) {
           session.cart.push({ ...item, qty: 1 });
+          console.log('Added to cart: ' + item.name);
+        }
+      }
+    });
+  }
           console.log(`Added: ${item.name}`);
         }
       }
